@@ -1,0 +1,76 @@
+# Automação V3 / CreditoBot Pro - .gitignore
+
+# Ambientes Virtuais e Dependências
+venv/
+.venv/
+env/
+ENV/
+node_modules/
+
+# Segredos e Variáveis de Ambiente
+.env
+**/.env
+*.env
+!*.env.example
+
+# Bancos de Dados e Dados Locais
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+browser_sessions/
+**/browser_sessions/
+
+# Dados Pessoais / Listas de Contatos / Exportações
+accepted_list.txt
+all_contacts.txt
+parsed_preview.txt
+rejected_list.txt
+espiao_final.txt
+espiao_api.txt
+simulacao_dados.json
+contatos_whatsapp.xlsx
+*.xlsx
+*.xls
+*.csv
+
+# Cache e Compilados Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs e Auditoria
+logs/
+**/logs/
+*.log
+*.tmp
+*.bak
+*.lnk
+
+# Sessões e Perfis de Navegadores
+edge_profile*/
+chrome_profile*/
+
+# WhatsApp Bridge Auth & Data
+auth_info/
+**/auth_info/
+contacts.json
+**/contacts.json
+stats.json
+**/stats.json
+
+# Kit de Agentes Interno (duplicata local)
+antigravity-kit-main/
+
+# IDEs e Sistema Operacional
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store

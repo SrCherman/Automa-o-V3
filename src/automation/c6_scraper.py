@@ -1,0 +1,206 @@
+"""Consulta C6 Auto até o valor sugerido de financiamento, sem avançar a proposta."""
+
+import re
+import time
+import unicodedata
+from datetime import date
+from decimal import Decimal, InvalidOperation
+from urllib.parse import urlparse
+
+from src.config import C6_URL, C6_USER, C6_PASS
+from src.automation.mind7_scraper import normalizar_nascimento
+from src.automation.cloudflare_solver import check_and_solve_cloudflare
+
+
+class C6Unavailable(RuntimeError):
+    """Portal, autenticação ou seleção do veículo precisa de atenção."""
+
+
+def valor_monetario(value):
+    text = re.sub(r"[^\d,.-]", "", str(value or ""))
+    if "," in text:
+        text = text.replace(".", "").replace(",", ".")
+    try:
+        result = Decimal(text)
+        if not result.is_finite() or result < 0 or result.as_tuple().exponent < -2:
+            raise ValueError("Valor monetário inválido")
+        return result
+    except InvalidOperation as exc:
+        raise ValueError("Valor monetário inválido") from exc
+
+
+def extrair_resultado_c6(text):
+    plain = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    if re.search(r"\b(?:simulando|erro)\b|selecione\s+um\s+valor\s+permitido", plain):
+        return None
+    if "proposta nao atende requisitos" in plain or "fora da politica" in plain:
+        return {"status": "FORA DA POLITICA", "financed_value": None,
+                "observation": "C6: proposta não atende aos requisitos / fora da política"}
+    if "cpf invalido" in plain or "cpf incompativel" in plain:
+        return {"status": "DADOS INVALIDOS", "financed_value": None, "observation": "C6: confira o CPF informado"}
+    if "valor sugerido" in plain:
+        match = re.search(r"\bfinanciamento\s*R\$\s*([\d.]+,\d{2})", text, re.I)
+        if match and valor_monetario(match.group(1)) > 0:
+            return {"status": "APROVADO", "financed_value": f"R$ {match.group(1)}",
+                    "observation": "Valor sugerido de financiamento exibido pelo C6"}
+    return None
+
+
+def _wait(predicate, seconds=20):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(0.25)
+    return None
+
+
+def _body(tab):
+    body = tab.ele("tag:body", timeout=0)
+    return body.text if body else ""
+
+
+def _button(tab, text):
+    return tab.ele(f'xpath://button[normalize-space(.)="{text}"]', timeout=0)
+
+
+def _login(tab):
+    if urlparse(tab.url).hostname != "c6auto.com.br":
+        raise C6Unavailable("C6 redirecionou para um domínio não reconhecido")
+    start = tab.ele("#submit-button", timeout=0)
+    if start:
+        start.click()
+        if not _wait(lambda: tab.ele("#username", timeout=0)):
+            raise C6Unavailable("C6 não exibiu o formulário de login")
+    user = tab.ele("#username", timeout=0)
+    if user:
+        if urlparse(tab.url).hostname != "c6auto.com.br" or not C6_USER or not C6_PASS:
+            raise C6Unavailable("Configure C6_USER e C6_PASS no .env ou faça o login no navegador")
+        user.input(C6_USER, clear=True)
+        password = tab.ele("#password", timeout=2)
+        if not password:
+            raise C6Unavailable("Campo de senha C6 indisponível")
+        password.input(C6_PASS, clear=True)
+        tab.ele("#kc-login", timeout=2).click()
+    if not _wait(lambda: "/shopkeeper-panel" in tab.url, 25):
+        raise C6Unavailable("Login C6 pendente; verifique a aba do navegador")
+
+
+def iniciar_nova_consulta(tab):
+    tab.get(C6_URL)
+    if not _wait(lambda: _button(tab, "CRIAR UMA NOVA PROPOSTA") or tab.ele("#submit-button", timeout=0) or tab.ele("#username", timeout=0)):
+        raise C6Unavailable("Painel C6 indisponível")
+    if "/shopkeeper-panel" not in tab.url:
+        _login(tab)
+    create = _wait(lambda: _button(tab, "CRIAR UMA NOVA PROPOSTA"))
+    if not create:
+        raise C6Unavailable("C6 não disponibilizou uma nova proposta")
+    create.click()
+    # O CPF aparece antes de o C6 terminar de carregar produto, UF e placa.
+    field = _wait(lambda: tab.ele('css:input[formcontrolname="plateNumber"]', timeout=0)
+                  and tab.ele('css:input[formcontrolname="numeroDocumento"]', timeout=0))
+    if not field or re.sub(r"\D", "", field.value or ""):
+        raise C6Unavailable("O C6 não abriu um formulário novo e vazio")
+
+
+def _input(tab, control, value):
+    field = tab.ele(f'css:input[formcontrolname="{control}"]', timeout=2)
+    if not field:
+        raise C6Unavailable(f"Campo C6 indisponível: {control}")
+    field.input(value, clear=True)
+    field.run_js("this.dispatchEvent(new Event('change', {bubbles:true})); this.blur();")
+    return field
+
+
+def _select_uf(tab, uf):
+    select = tab.ele('css:mat-select[formcontrolname="ufDeLicenciamento"]', timeout=2)
+    if not select:
+        raise C6Unavailable("Campo UF C6 indisponível")
+    if select.text.strip().upper() != uf:
+        select.click()
+        option = tab.ele(f'xpath://mat-option[normalize-space(.)="{uf}"]', timeout=3)
+        if not option:
+            raise C6Unavailable("UF não disponível no C6")
+        option.click()
+    if select.text.strip().upper() != uf:
+        raise ValueError("C6 não confirmou a UF selecionada")
+
+
+def consultar_c6_cpf(page, cpf, phone, birth_date, plate, vehicle_value, options, before_submit):
+    cpf = re.sub(r"\D", "", cpf or "")
+    phone = re.sub(r"\D", "", phone or "")
+    if len(phone) == 13 and phone.startswith("55"):
+        phone = phone[2:]
+    nascimento = normalizar_nascimento(birth_date)
+    plate = re.sub(r"[^A-Z0-9]", "", (plate or "").upper())
+    uf = str(options.get("uf", "")).upper()
+    if len(cpf) != 11 or len(set(cpf)) == 1 or len(phone) != 11 or not nascimento or len(plate) != 7:
+        raise ValueError("CPF, celular, nascimento ou placa inválidos para o C6")
+    if uf not in "AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO".split():
+        raise ValueError("UF inválida para o C6")
+    if options.get("has_cnh") not in (True, False, 0, 1):
+        raise ValueError("CNH deve ser confirmada antes da consulta")
+    vehicle = valor_monetario(vehicle_value)
+    entry_text = options.get("entry_value", "")
+    entry = valor_monetario(entry_text) if entry_text else None
+    if vehicle <= 0 or (entry is not None and entry >= vehicle):
+        raise ValueError("Entrada deve ser menor que o valor do veículo")
+
+    tabs = page.get_tabs()
+    tab = next((t for t in tabs if urlparse(t.url).hostname == "c6auto.com.br"), None) or page.new_tab(C6_URL)
+    iniciar_nova_consulta(tab)
+    if not check_and_solve_cloudflare(tab):
+        raise C6Unavailable("C6 aguarda validação no navegador")
+    fields = {
+        "numeroDocumento": cpf,
+        "celular": phone,
+        "dataDeNascimento": date.fromisoformat(nascimento).strftime("%d/%m/%Y"),
+    }
+    for control, value in fields.items():
+        field = _input(tab, control, value)
+        if re.sub(r"\D", "", field.value or "") != re.sub(r"\D", "", value) or field.attr("aria-invalid") == "true":
+            raise ValueError(f"C6 rejeitou o campo {control}")
+    cnh = tab.ele('xpath://mat-checkbox[contains(.,"Cliente possui CNH")]//input', timeout=2)
+    if not cnh:
+        raise C6Unavailable("Campo de CNH indisponível")
+    if (cnh.attr("aria-checked") == "true") != bool(options["has_cnh"]):
+        tab.ele('xpath://mat-checkbox[contains(.,"Cliente possui CNH")]//label', timeout=2).click()
+    if (cnh.attr("aria-checked") == "true") != bool(options["has_cnh"]):
+        raise ValueError("C6 não confirmou a informação de CNH")
+    _select_uf(tab, uf)
+    plate_field = _input(tab, "plateNumber", plate)
+    if re.sub(r"[^A-Z0-9]", "", (plate_field.value or "").upper()) != plate:
+        raise ValueError("C6 não confirmou a placa")
+
+    def vehicle_ready():
+        return all((field := tab.ele(f'css:input[formcontrolname="{control}"]', timeout=0)) and field.value
+                   for control in ("marca", "anoModelo", "modelo"))
+
+    if not _wait(vehicle_ready, 20):
+        raise C6Unavailable("A placa não preencheu marca, ano e modelo; confira o veículo no C6")
+    amounts = [("valorDoVeiculo", vehicle_value)]
+    if entry is not None:
+        amounts.append(("valorDeEntrada", entry_text))
+    for control, value in amounts:
+        field = _input(tab, control, str(value))
+        expected = vehicle if control == "valorDoVeiculo" else entry
+        if valor_monetario(field.value) != expected or field.attr("aria-invalid") == "true":
+            raise ValueError(f"C6 não confirmou o valor do campo {control}")
+    if entry is None:
+        field = tab.ele('css:input[formcontrolname="valorDeEntrada"]', timeout=2)
+        if not field:
+            raise C6Unavailable("Campo de entrada C6 indisponível")
+        if field.value:
+            _input(tab, "valorDeEntrada", "")
+            if field.value and valor_monetario(field.value) != 0:
+                raise ValueError("C6 não permitiu deixar a entrada em branco")
+    simulate = _wait(lambda: (b := _button(tab, "SIMULAR")) and b.attr("disabled") is None and b)
+    if not simulate:
+        raise C6Unavailable("Formulário C6 inválido ou botão Simular indisponível")
+    before_submit()
+    simulate.click()
+    result = _wait(lambda: extrair_resultado_c6(_body(tab)), 45)
+    if not result:
+        raise TimeoutError("C6 recebeu a consulta, mas o resultado não foi confirmado. Confira a aba antes de repetir.")
+    return result

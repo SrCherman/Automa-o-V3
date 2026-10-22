@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CreditoBot Pro V2 - Painel de Controle Multi-Campanhas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --primary-light: #e0e7ff;
+      --bg-main: #f8fafc;
+      --panel-bg: #ffffff;
+      --sidebar-bg: #ffffff;
+      --sidebar-border: #e2e8f0;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --border-color: #e2e8f0;
+      --success: #10b981;
+      --success-bg: #d1fae5;
+      --warning: #f59e0b;
+      --warning-bg: #fef3c7;
+      --danger: #ef4444;
+      --danger-bg: #fee2e2;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.05);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.05);
+      --shadow-lg: 0 10px 25px rgba(0,0,0,0.08);
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+    body { background-color: var(--bg-main); color: var(--text-main); display: flex; height: 100vh; overflow: hidden; }
+
+    /* SIDEBAR */
+    .sidebar { width: 260px; background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border); display: flex; flex-direction: column; padding: 24px 16px; z-index: 10; }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 800; font-size: 20px; color: var(--primary-hover); margin-bottom: 32px; padding: 0 8px; }
+    .brand-icon { width: 36px; height: 36px; background: linear-gradient(135deg, #6366f1, #4f46e5); color: #fff; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; box-shadow: 0 4px 10px rgba(99,102,241,0.3); }
+    
+    .nav-menu { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+    .nav-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: var(--radius-md); color: var(--text-muted); font-weight: 500; cursor: pointer; transition: all 0.2s; }
+    .nav-item:hover { background: var(--bg-main); color: var(--text-main); }
+    .nav-item.active { background: var(--primary-light); color: var(--primary-hover); font-weight: 600; }
+    .nav-icon { font-size: 18px; width: 20px; text-align: center; }
+
+    .sidebar-footer { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border-color); }
+    .reset-db-btn { width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px dashed var(--danger); background: #fef2f2; color: var(--danger); font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s; }
+    .reset-db-btn:hover { background: var(--danger); color: #fff; }
+
+    /* MAIN CONTAINER */
+    .main-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* TOP HEADER */
+    .header { height: 70px; background: var(--panel-bg); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; padding: 0 32px; }
+    .header-search { position: relative; width: 320px; }
+    .header-search input { width: 100%; padding: 10px 16px 10px 40px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-main); font-size: 14px; outline: none; transition: all 0.2s; }
+    .header-search input:focus { border-color: var(--primary); background: #fff; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
+    .header-search .search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); }
+
+    .header-actions { display: flex; align-items: center; gap: 16px; }
+    .status-badge { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+    .status-badge.stopped { background: var(--warning-bg); color: var(--warning); }
+    .status-badge.running { background: var(--success-bg); color: var(--success); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+
+    /* CONTENT AREA */
+    .content-area { flex: 1; padding: 32px; overflow-y: auto; }
+    .tab-page { display: none; }
+    .tab-page.active { display: block; }
+
+    /* METRICS CARDS */
+    .metrics-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 28px; }
+    .metric-card { background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 20px 24px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 8px; cursor: pointer; transition: transform 0.2s; }
+    .metric-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+    .metric-title { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-val-group { display: flex; align-items: baseline; justify-content: space-between; }
+    .metric-val { font-size: 28px; font-weight: 800; color: var(--text-main); }
+    .metric-badge { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; }
+    .badge-up { background: var(--success-bg); color: var(--success); }
+    .badge-down { background: var(--danger-bg); color: var(--danger); }
+
+    /* CARDS & PANELS */
+    .card-panel { background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 24px; box-shadow: var(--shadow-sm); margin-bottom: 24px; }
+    .panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+    .panel-title { font-size: 18px; font-weight: 700; }
+
+    /* DRAG & DROP UPLOAD */
+    .dropzone { border: 2px dashed #a5b4fc; background: #f5f3ff; border-radius: var(--radius-lg); padding: 48px 24px; text-align: center; cursor: pointer; transition: all 0.2s; position: relative; }
+    .dropzone:hover, .dropzone.dragover { border-color: var(--primary); background: #eef2ff; }
+    .upload-icon { width: 64px; height: 64px; background: #e0e7ff; color: var(--primary); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; margin: 0 auto 16px; }
+    .upload-btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; background: var(--primary); color: #fff; border-radius: var(--radius-md); font-weight: 600; border: none; cursor: pointer; margin-top: 16px; box-shadow: 0 4px 12px rgba(99,102,241,0.25); }
+    .upload-btn:hover { background: var(--primary-hover); }
+
+    /* DATA TABLE */
+    .table-container { width: 100%; overflow-x: auto; border-radius: var(--radius-md); border: 1px solid var(--border-color); }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; user-select: none; }
+    th { background: #f8fafc; padding: 14px 16px; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border-color); }
+    td { padding: 14px 16px; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
+    tr:hover { background: #f8fafc; }
+
+    .tag-status { padding: 4px 10px; border-radius: 12px; font-weight: 700; font-size: 11px; display: inline-block; }
+    .status-NAO_CORRENTISTA { background: #d1fae5; color: #065f46; }
+    .status-CORRENTISTA { background: #dbeafe; color: #1e40af; }
+    .status-REPROVADO, .status-CONSULTADO { background: #fee2e2; color: #991b1b; }
+    .status-PENDENTE { background: #fef3c7; color: #92400e; }
+    .status-CPF_COLETADO { background: #e0e7ff; color: #3730a3; }
+    .status-DUPLICADO { background: #f3e8ff; color: #6b21a8; }
+    .status-ERRO { background: #fecaca; color: #7f1d1d; }
+    .status-PROCESSANDO { background: #fed7aa; color: #9a3412; }
+    .status-PENDENTE_ITAU { background: #fef08a; color: #854d0e; }
+    .status-SEM_DADOS { background: #f1f5f9; color: #475569; }
+
+    /* ACTION BUTTONS */
+    .btn { padding: 8px 16px; border-radius: var(--radius-sm); font-weight: 600; font-size: 13px; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-outline { background: transparent; border: 1px solid var(--border-color); color: var(--text-main); }
+    .btn-outline:hover { background: var(--bg-main); }
+
+    /* MODAL */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.6); backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; z-index: 100; }
+    .modal-overlay.active { display: flex; }
+    .modal-box { background: #fff; width: 520px; max-height:90vh; overflow-y:auto; border-radius: var(--radius-lg); padding: 28px; box-shadow: var(--shadow-lg); }
+    .modal-header { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+    .modal-body { color: var(--text-muted); font-size: 14px; margin-bottom: 20px; }
+    .modal-footer { display: flex; justify-content: flex-end; gap: 12px; }
+
+    /* FILTERS BAR */
+    .filter-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+    .select-input { padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: #fff; outline: none; font-size: 14px; }
+  </style>
+</head>
+<body>
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <span>CreditoBot Pro</span>
+    </div>
+    <ul class="nav-menu">
+      <li class="nav-item active" onclick="switchTab('dashboard')">
+        <span class="nav-icon">📊</span>
+        <span>Dashboard</span>
+      </li>
+      <li class="nav-item" onclick="switchTab('upload')">
+        <span class="nav-icon">📁</span>
+        <span>Importar Planilha</span>
+      </li>
+      <li class="nav-item" onclick="switchTab('contacts')">
+        <span class="nav-icon">🗄️</span>
+        <span>Gerenciar Leads (BD)</span>
+      </li>
+      <li class="nav-item" onclick="switchTab('campaigns')">
+        <span class="nav-icon">🎯</span>
+        <span>Campanhas</span>
+      </li>
+    </ul>
+
+    <div class="sidebar-footer">
+      <button class="reset-db-btn" onclick="openResetModal()">
+        <span>🗑️</span> Zerar Banco de Dados
+      </button>
+    </div>
+  </aside>
+
+  <!-- MAIN WRAPPER -->
+  <div class="main-wrapper">
+    <!-- HEADER -->
+    <header class="header">
+      <div class="header-search">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="globalSearch" aria-label="Buscar contatos por nome, CPF ou telefone" placeholder="Buscar por Nome, CPF ou Telefone..." oninput="handleSearch(this.value)">
+      </div>
+      <div class="header-actions">
+        <div id="activeCampaignsBadgesContainer" style="display:flex; gap:8px;"></div>
+        <button class="btn btn-primary" onclick="openLaunchCampaignModal()">
+          <span>▶</span> <span>Iniciar Automação de Campanha</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- CONTENT AREA -->
+    <main class="content-area">
+
+      <!-- TAB 1: DASHBOARD -->
+      <section id="tab-dashboard" class="tab-page active">
+        <div class="metrics-grid">
+          <div class="metric-card" onclick="switchTab('contacts')" title="Clique para gerenciar todas as leads">
+            <div class="metric-title">TOTAL DE LEADS</div>
+            <div class="metric-val-group">
+              <div class="metric-val" id="statTotal">0</div>
+              <div class="metric-badge badge-up">Gerenciar ➔</div>
+            </div>
+          </div>
+          <div class="metric-card" onclick="switchTab('contacts')" title="Ver CPFs Coletados no Mind7">
+            <div class="metric-title">CPFs COLETADOS</div>
+            <div class="metric-val-group">
+              <div class="metric-val" id="statCpfsColetados" style="color:var(--primary);">0</div>
+              <div class="metric-badge badge-up" style="background:#e0e7ff; color:var(--primary-hover);">Mind7</div>
+            </div>
+          </div>
+          <div class="metric-card" onclick="switchTab('contacts')">
+            <div class="metric-title">PROCESSADOS</div>
+            <div class="metric-val-group">
+              <div class="metric-val" id="statProcessados">0</div>
+              <div class="metric-badge badge-up" id="statProgresso">0%</div>
+            </div>
+          </div>
+          <div class="metric-card" onclick="switchTab('contacts')">
+            <div class="metric-title">APROVADOS (CRÉDITO)</div>
+            <div class="metric-val-group">
+              <div class="metric-val" id="statAprovados">0</div>
+              <div class="metric-badge badge-up" id="statTaxa">0%</div>
+            </div>
+          </div>
+          <div class="metric-card" onclick="switchTab('contacts')">
+            <div class="metric-title">REPROVADOS / SEM DADOS</div>
+            <div class="metric-val-group">
+              <div class="metric-val" id="statReprovados">0</div>
+              <div class="metric-badge badge-down">Refiltrado</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-panel">
+          <div class="panel-header">
+            <div class="panel-title">Status das Campanhas (Execução Simultânea)</div>
+            <button class="btn btn-outline" onclick="stopAllCampaigns()" style="color:var(--danger); border-color:#fca5a5;">⏹️ Parar Todas</button>
+          </div>
+          <div id="runningCampaignsList" style="display:flex; flex-direction:column; gap:12px;"></div>
+        </div>
+
+        <div class="card-panel">
+          <div class="panel-header">
+            <div class="panel-title">Últimas Consultas Realizadas</div>
+            <button class="btn btn-outline" onclick="switchTab('contacts')">Ver Todas no Banco</button>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Telefone</th>
+                  <th>CPF</th>
+                  <th>Status Itaú</th>
+                  <th>Valor Financiado</th>
+                  <th>Observação</th>
+                </tr>
+              </thead>
+              <tbody id="dashboardRecentTable">
+                <tr><td colspan="6" style="text-align:center; color:var(--text-muted);">Nenhum contato recente.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: IMPORTAR PLANILHA -->
+      <section id="tab-upload" class="tab-page">
+        <div class="card-panel">
+          <div class="panel-header">
+            <div class="panel-title">Importar Planilha de Contatos</div>
+          </div>
+          
+          <div style="margin-bottom:20px;">
+            <label for="uploadCampaignSelect" style="font-size:14px; font-weight:600; color:var(--text-main);">Selecione a Campanha Alvo:</label>
+            <select id="uploadCampaignSelect" aria-label="Selecione a campanha para importação" class="select-input" style="width:100%; margin-top:8px;"></select>
+          </div>
+
+          <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+            <input type="file" id="fileInput" aria-label="Anexar arquivo de planilha" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleFileSelect(event)">
+            <div class="upload-icon">📎</div>
+            <h3 style="font-size:18px; font-weight:700; margin-bottom:6px;">Arraste e solte sua planilha aqui</h3>
+            <p style="color:var(--text-muted); font-size:14px;">Suporta arquivos <b>.xlsx</b>, <b>.xls</b> e <b>.csv</b> no formato exportado do WhatsApp</p>
+            <button type="button" class="upload-btn">Anexar Arquivo</button>
+          </div>
+
+          <div id="uploadResultCard" style="display:none; margin-top:24px; padding:20px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:var(--radius-md);">
+            <h4 style="color:#166534; font-weight:700; margin-bottom:8px;">✅ Planilha Processada com Sucesso!</h4>
+            <div id="uploadResultSummary" style="font-size:14px; color:#15803d;"></div>
+            <button class="btn btn-primary" style="margin-top:12px;" onclick="switchTab('contacts')">Ver Leads no Banco ➔</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: GERENCIAR LEADS (BD) -->
+      <section id="tab-contacts" class="tab-page">
+        <div class="card-panel">
+          <div class="panel-header">
+            <div class="panel-title">Painel de Gerenciamento de Leads</div>
+            <div style="font-size:14px; color:var(--text-muted);">Exibindo <b id="leadsCountCount">0</b> leads no banco | <span style="color:var(--primary); font-weight:600;">Dica: Segure SHIFT para selecionar em intervalo</span></div>
+          </div>
+
+          <div class="filter-bar">
+            <div style="display:flex; gap:12px; align-items:center;">
+              <select id="filterStatus" aria-label="Filtrar contatos por status" class="select-input" onchange="loadContacts()">
+                <option value="TODOS">Status: Todos</option>
+                <option value="APROVADOS">Aprovados (Crédito)</option>
+                <option value="NAO CORRENTISTA">Não Correntistas</option>
+                <option value="CORRENTISTA">Correntistas</option>
+                <option value="REPROVADOS">Reprovados</option>
+                <option value="PENDENTE">Pendentes</option>
+                <option value="CPF COLETADO">CPF Coletado (Mind7)</option>
+                <option value="SEM DADOS">Sem Dados</option>
+                <option value="DUPLICADO">Duplicados</option>
+                <option value="ERRO">Erros</option>
+                <option value="PROCESSANDO">Em Processamento</option>
+              </select>
+              <select id="filterCampaign" aria-label="Filtrar contatos por campanha" class="select-input" onchange="loadContacts()">
+                <option value="">Campanha: Todas</option>
+              </select>
+            </div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <button class="btn btn-outline" onclick="exportData()">📥 Exportar Excel</button>
+              <button class="btn btn-primary" onclick="openBulkStatusModal()">✏️ Alterar Status em Lote</button>
+              <button class="btn btn-primary" onclick="openTransferModalForSelected()">🔀 Transferir Selecionadas</button>
+              <button class="btn btn-outline" onclick="deleteSelectedContacts()" style="color:var(--danger); border-color:#fca5a5;">🗑️ Excluir Selecionadas</button>
+              <button class="btn btn-danger" onclick="openDeleteAllModal()">🚨 Excluir TODAS as Leads</button>
+            </div>
+          </div>
+
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th><input type="checkbox" id="selectAllCheckbox" aria-label="Selecionar todas as leads da tabela" onchange="toggleSelectAll(this)"></th>
+                  <th>Nome</th>
+                  <th>Telefone</th>
+                  <th>CPF</th>
+                  <th>Status Itaú</th>
+                  <th>Valor Financiado</th>
+                  <th>CEP / Nº</th>
+                  <th>Enriquecimento / Nascimento</th>
+                  <th>C6 / Valor Financiado</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="contactsTableBody">
+                <tr><td colspan="10" style="text-align:center;">Carregando contatos...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: CAMPANHAS -->
+      <section id="tab-campaigns" class="tab-page">
+        <div class="card-panel">
+          <div class="panel-header">
+            <div class="panel-title">Criar Nova Campanha (Isolamento de Cidade/Região)</div>
+          </div>
+          <div style="display:flex; gap:12px; align-items:center;">
+            <input type="text" id="newCampaignName" aria-label="Nome da nova campanha" class="select-input" style="flex:1;" placeholder="Nome da Campanha (Ex: Vitória - Agosto 2026)">
+            <button class="btn btn-primary" onclick="createCampaign()">Criar Campanha</button>
+          </div>
+        </div>
+
+        <div class="card-panel">
+          <div class="panel-header">
+            <div class="panel-title">Campanhas Existentes</div>
+          </div>
+          <div id="campaignsListGrid" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:16px;"></div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- MODAL: ALTERAR STATUS EM LOTE -->
+  <div id="bulkStatusModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header">✏️ Alterar Status em Lote</div>
+      <div class="modal-body">
+        <p style="margin-bottom:12px;">Selecione o novo status para as leads selecionadas:</p>
+        <label for="bulkStatusSelect" style="font-size:12px; font-weight:600;">Novo Status:</label>
+        <select id="bulkStatusSelect" aria-label="Selecionar novo status para alteração em lote" class="select-input" style="width:100%; margin-top:6px;">
+          <option value="PENDENTE">PENDENTE</option>
+          <option value="CPF COLETADO">CPF COLETADO</option>
+          <option value="NAO CORRENTISTA">NAO CORRENTISTA (Aprovado)</option>
+          <option value="CORRENTISTA">CORRENTISTA (Aprovado)</option>
+          <option value="REPROVADO">REPROVADO</option>
+          <option value="SEM DADOS">SEM DADOS</option>
+          <option value="DUPLICADO">DUPLICADO</option>
+          <option value="ERRO">ERRO</option>
+        </select>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeBulkStatusModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="confirmBulkStatusChange()">Confirmar Alteração em Lote</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: SELECIONAR E INICIAR CAMPANHA -->
+  <div id="launchCampaignModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header">🚀 Iniciar Automação de Campanha</div>
+      <div class="modal-body" style="display:flex; flex-direction:column; gap:14px;">
+        <div>
+          <label for="launchCampaignSelect" style="font-size:12px; font-weight:600;">Selecione a Campanha a Rodar:</label>
+          <select id="launchCampaignSelect" aria-label="Selecione a campanha a ser executada" class="select-input" style="width:100%; margin-top:6px;"></select>
+        </div>
+        <div>
+          <label for="launchPlaca" style="font-size:12px; font-weight:600;">Placa do Veículo (Itaú):</label>
+          <input type="text" id="launchPlaca" aria-label="Placa do veículo para simulação" class="select-input" style="width:100%; margin-top:6px;" value="IWD0H56">
+        </div>
+        <div>
+          <label for="launchValor" style="font-size:12px; font-weight:600;">Valor do Veículo (R$):</label>
+          <input type="text" id="launchValor" aria-label="Valor do veículo para simulação" class="select-input" style="width:100%; margin-top:6px;" value="120.000,00">
+        </div>
+        <div>
+          <label for="launchEtapaInicial" style="font-size:12px; font-weight:600;">Etapa de Início da Automação:</label>
+          <select id="launchEtapaInicial" aria-label="Etapa de início da automação" class="select-input" style="width:100%; margin-top:6px;">
+            <option value="AUTO">⚡ Modo Automático (Todas as Etapas)</option>
+            <option value="MIND7">🔍 Etapa 1 - Apenas Coleta de CPF (Mind7)</option>
+            <option value="ENRIQUECIMENTO">🏡 Etapa 2 - Enriquecimento por CPF (Mind7)</option>
+            <option value="CREDLINE">💳 Etapa 3 - Itaú Credline</option>
+            <option value="C6">💳 Etapa 4 - C6 Auto</option>
+          </select>
+        </div>
+        <p style="font-size:12px; color:var(--text-muted);">C6: placa SEO7H39 · veículo R$ 130.000,00 · PR · com CNH · entrada em branco. O enriquecimento consulta todos os CPFs; os resultados dos bancos são independentes.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeLaunchCampaignModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="confirmLaunchCampaign()">▶ Iniciar Esta Campanha</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: TRANSFERIR LEADS ENTRE CAMPANHAS -->
+  <div id="transferModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header">🔀 Transferir Leads de Campanha</div>
+      <div class="modal-body">
+        <p style="margin-bottom:12px;">Selecione a campanha de destino para as leads selecionadas:</p>
+        <label for="transferTargetCampaignSelect" style="font-size:12px; font-weight:600;">Campanha de Destino:</label>
+        <select id="transferTargetCampaignSelect" aria-label="Campanha de destino para transferência" class="select-input" style="width:100%; margin-top:6px;"></select>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeTransferModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="confirmTransferLeads()">Confirmar Transferência</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: EXCLUIR TODAS AS LEADS -->
+  <div id="deleteAllModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header" style="color:var(--danger);">🚨 Excluir TODAS as Leads do Banco</div>
+      <div class="modal-body">
+        Você está prestes a excluir <b>TODAS as leads salvas no banco de dados</b>. Esta operação é irreversível.<br><br>
+        Para confirmar a exclusão de todas as leads, digite <b>DELETAR</b> abaixo:
+        <label for="deleteAllConfirmInput" style="display:none;">Confirmação</label>
+        <input type="text" id="deleteAllConfirmInput" aria-label="Digite DELETAR para confirmar exclusão total" class="select-input" style="width:100%; margin-top:12px;" placeholder="Digite DELETAR">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeDeleteAllModal()">Cancelar</button>
+        <button class="btn btn-danger" onclick="confirmDeleteAllLeads()">Excluir TODAS as Leads</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: EDITAR LEAD -->
+  <div id="editLeadModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header">✏️ Editar Lead</div>
+      <div class="modal-body" style="display:flex; flex-direction:column; gap:12px;">
+        <input type="hidden" id="editLeadId">
+        <div>
+          <label for="editBirthDate">Data de nascimento</label>
+          <input type="date" id="editBirthDate" class="select-input" style="width:100%;">
+        </div>
+        <div>
+          <label for="editEnrichmentStatus">Enriquecimento</label>
+          <select id="editEnrichmentStatus" class="select-input" style="width:100%;">
+            <option>PENDENTE</option><option>CONCLUIDO</option><option>INCOMPLETO</option><option>SEM DADOS</option><option>ERRO</option>
+          </select>
+        </div>
+        <label><input type="checkbox" id="editRetryC6"> Reabrir consulta C6: conferi no portal e preciso consultar novamente.</label>
+        <div>
+          <label for="editCleanName" style="font-size:12px; font-weight:600;">Nome Completo</label>
+          <input type="text" id="editCleanName" aria-label="Editar nome completo" class="select-input" style="width:100%;">
+        </div>
+        <div>
+          <label for="editPhone" style="font-size:12px; font-weight:600;">Telefone</label>
+          <input type="text" id="editPhone" aria-label="Editar telefone" class="select-input" style="width:100%;">
+        </div>
+        <div>
+          <label for="editCpf" style="font-size:12px; font-weight:600;">CPF</label>
+          <input type="text" id="editCpf" aria-label="Editar CPF" class="select-input" style="width:100%;">
+        </div>
+        <div>
+          <label for="editStatus" style="font-size:12px; font-weight:600;">Status Itaú</label>
+          <select id="editStatus" aria-label="Editar status Itaú" class="select-input" style="width:100%;">
+            <option value="PENDENTE">PENDENTE</option>
+            <option value="CPF COLETADO">CPF COLETADO</option>
+            <option value="NAO CORRENTISTA">NAO CORRENTISTA</option>
+            <option value="CORRENTISTA">CORRENTISTA</option>
+            <option value="REPROVADO">REPROVADO</option>
+            <option value="SEM DADOS">SEM DADOS</option>
+            <option value="DUPLICADO">DUPLICADO</option>
+            <option value="ERRO">ERRO</option>
+          </select>
+        </div>
+        <div>
+          <label for="editFinancedValue" style="font-size:12px; font-weight:600;">Valor Financiado</label>
+          <input type="text" id="editFinancedValue" aria-label="Editar valor financiado" class="select-input" style="width:100%;">
+        </div>
+        <div>
+          <label for="editObservation" style="font-size:12px; font-weight:600;">Observação</label>
+          <input type="text" id="editObservation" aria-label="Editar observação" class="select-input" style="width:100%;">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeEditModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="saveLeadEdit()">Salvar Alterações</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ZERAR BANCO DE DADOS -->
+  <div id="resetModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header" style="color:var(--danger);">⚠️ Atenção: Zerar Banco de Dados</div>
+      <div class="modal-body">
+        Esta ação apagará permanentemente os contatos e histórico de consultas. Para confirmar, digite <b>DELETAR</b> abaixo:
+        <label for="resetConfirmInput" style="display:none;">Confirmação</label>
+        <input type="text" id="resetConfirmInput" aria-label="Digite DELETAR para zerar banco de dados" class="select-input" style="width:100%; margin-top:12px;" placeholder="Digite DELETAR">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeResetModal()">Cancelar</button>
+        <button class="btn btn-danger" onclick="confirmResetDB()">Zerar Banco</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentTab = 'dashboard';
+    let selectedContacts = new Set();
+    let lastCheckedIndex = null;
+    let transferTargetIds = [];
+    let ws = null;
+    let cachedContacts = [];
+    let cachedCampaigns = [];
+    let activeRunningMap = new Map();
+
+    function switchTab(tabId) {
+      currentTab = tabId;
+      document.querySelectorAll('.tab-page').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+      
+      document.getElementById(`tab-${tabId}`).classList.add('active');
+      const activeNav = Array.from(document.querySelectorAll('.nav-item')).find(el => el.getAttribute('onclick').includes(tabId));
+      if (activeNav) activeNav.classList.add('active');
+
+      if (tabId === 'contacts') loadContacts();
+      if (tabId === 'campaigns') loadCampaigns();
+    }
+
+    async function loadStats() {
+      const res = await fetch('/api/automation/state');
+      const data = await res.json();
+      const state = data.state;
+      const stats = state.stats;
+
+      document.getElementById('statTotal').textContent = stats.total || 0;
+      if (document.getElementById('statCpfsColetados')) {
+        document.getElementById('statCpfsColetados').textContent = stats.cpfs_coletados || 0;
+      }
+      document.getElementById('statProcessados').textContent = stats.processados || 0;
+      document.getElementById('statAprovados').textContent = stats.aprovados || 0;
+      document.getElementById('statReprovados').textContent = (stats.reprovados + stats.sem_dados) || 0;
+      document.getElementById('statProgresso').textContent = stats.total ? Math.round((stats.processados/stats.total)*100)+'%' : '0%';
+      document.getElementById('statTaxa').textContent = (stats.taxa_aprovacao || 0) + '%';
+
+      activeRunningMap.clear();
+      if (state.running_campaigns) {
+        state.running_campaigns.forEach(c => activeRunningMap.set(c.campaign_id, c));
+      }
+
+      renderRunningCampaignsUI(state.running_campaigns || []);
+      if (currentTab === 'campaigns') loadCampaigns();
+    }
+
+    function renderRunningCampaignsUI(runningList) {
+      const containerHeader = document.getElementById('activeCampaignsBadgesContainer');
+      const containerPanel = document.getElementById('runningCampaignsList');
+
+      if (!runningList || runningList.length === 0) {
+        containerHeader.innerHTML = '';
+        containerPanel.innerHTML = '<p style="color:var(--text-muted); font-size:14px;">Nenhuma campanha em execução no momento.</p>';
+        return;
+      }
+
+      containerHeader.innerHTML = runningList.map(c => `
+        <div class="status-badge running" style="gap:6px; cursor:pointer;" title="Rodando em porta isolada">
+          <div class="status-dot"></div>
+          <span>🎯 ${c.campaign_name}</span>
+          <button style="background:none; border:none; color:currentColor; cursor:pointer; font-weight:bold; margin-left:4px;" onclick="stopCampaign(${c.campaign_id})">✕</button>
+        </div>
+      `).join('');
+
+      containerPanel.innerHTML = runningList.map(c => `
+        <div style="background:#f0fdf4; border:1px solid #bbf7d0; padding:16px; border-radius:var(--radius-md); display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <b style="color:#166534; font-size:16px;">🟢 ${c.campaign_name}</b>
+            <div style="font-size:13px; color:#15803d; margin-top:4px;">
+              ID: #${c.campaign_id} | Placa: <b>${c.placa_veiculo}</b> | Valor: <b>R$ ${c.valor_veiculo}</b> | Status: <b>Navegação Isolada Ativa</b>
+            </div>
+          </div>
+          <button class="btn btn-outline" style="color:var(--danger); border-color:#fca5a5; padding:6px 12px; font-size:12px;" onclick="stopCampaign(${c.campaign_id})">⏹️ Parar Esta Campanha</button>
+        </div>
+      `).join('');
+    }
+
+    // MULTI-CAMPAIGN LAUNCH MODAL
+    async function openLaunchCampaignModal(preselectId = null) {
+      const res = await fetch('/api/campaigns/');
+      const data = await res.json();
+      cachedCampaigns = data.campaigns || [];
+
+      const sel = document.getElementById('launchCampaignSelect');
+      if (!cachedCampaigns || cachedCampaigns.length === 0) {
+        sel.innerHTML = '<option value="">Nenhuma campanha cadastrada</option>';
+      } else {
+        sel.innerHTML = await Promise.all(cachedCampaigns.map(async c => {
+          const resConts = await fetch(`/api/contacts/?campaign_id=${c.id}&limit=1`);
+          const dConts = await resConts.json();
+          const totalLeads = dConts.total || 0;
+          return `<option value="${c.id}" ${preselectId == c.id ? 'selected' : ''}>🎯 ${c.name} (${totalLeads} leads salvas)</option>`;
+        })).then(opts => opts.join(''));
+      }
+      document.getElementById('launchCampaignModal').classList.add('active');
+    }
+
+    function closeLaunchCampaignModal() {
+      document.getElementById('launchCampaignModal').classList.remove('active');
+    }
+
+    async function confirmLaunchCampaign() {
+      const campSel = document.getElementById('launchCampaignSelect');
+      const campId = campSel ? parseInt(campSel.value) : null;
+      if (!campId) { alert('Selecione uma campanha válida.'); return; }
+
+      const placaEl = document.getElementById('launchPlaca');
+      const valorEl = document.getElementById('launchValor');
+      const etapaEl = document.getElementById('launchEtapaInicial');
+
+      const placa = placaEl ? placaEl.value : 'IWD0H56';
+      const valor = valorEl ? valorEl.value : '120.000,00';
+      const etapa = etapaEl ? etapaEl.value : 'AUTO';
+
+      const res = await fetch('/api/automation/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ campaign_id: campId, placa_veiculo: placa, valor_veiculo: valor, etapa_inicial: etapa })
+      });
+      const data = await res.json();
+      closeLaunchCampaignModal();
+      alert(data.message || 'Campanha iniciada!');
+      await loadStats();
+      await loadCampaigns();
+    }
+
+    async function stopCampaign(campId) {
+      await fetch('/api/automation/stop', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ campaign_id: campId })
+      });
+      await loadStats();
+      await loadCampaigns();
+    }
+
+    async function stopAllCampaigns() {
+      await fetch('/api/automation/stop', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ campaign_id: null })
+      });
+      await loadStats();
+      await loadCampaigns();
+    }
+
+    function handleSearch(val) {
+      if (currentTab !== 'contacts') switchTab('contacts');
+      loadContacts(val);
+    }
+
+    async function loadContacts(searchTerm = null) {
+      const status = document.getElementById('filterStatus').value;
+      const campaignId = document.getElementById('filterCampaign').value;
+      const search = searchTerm !== null ? searchTerm : document.getElementById('globalSearch').value;
+      
+      let params = new URLSearchParams();
+      if (status) params.append('status', status);
+      if (campaignId) params.append('campaign_id', campaignId);
+      if (search && search.trim()) params.append('search', search.trim());
+      params.append('limit', '500');
+
+      const url = `/api/contacts/?${params.toString()}`;
+
+      const res = await fetch(url);
+      const data = await res.json();
+      cachedContacts = data.contacts || [];
+
+      document.getElementById('leadsCountCount').textContent = data.total || 0;
+      const tbody = document.getElementById('contactsTableBody');
+      const recentTbody = document.getElementById('dashboardRecentTable');
+
+      if (!cachedContacts || cachedContacts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:var(--text-muted);">Nenhum contato encontrado.</td></tr>';
+        recentTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted);">Nenhum contato recente.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = cachedContacts.map((c, index) => `
+        <tr>
+          <td><input type="checkbox" class="contact-checkbox" value="${c.id}" ${selectedContacts.has(c.id)?'checked':''} onclick="handleCheckboxClick(event, ${c.id}, ${index})"></td>
+          <td><b>${c.clean_name || c.whatsapp_name || '-'}</b></td>
+          <td>${c.phone}</td>
+          <td>${c.cpf || '-'}</td>
+          <td><span class="tag-status status-${(c.credline_status||'PENDENTE').replace(/\s+/g, '_')}">${c.credline_status||'PENDENTE'}</span></td>
+          <td><b>${c.financed_value || '-'}</b></td>
+          <td>${c.cep || '-'} ${c.house_number ? 'nº '+c.house_number : ''}</td>
+          <td title="${escapeHtml(c.enrichment_observation)}">${escapeHtml(c.enrichment_status || 'PENDENTE')}<br>${escapeHtml(c.birth_date ? c.birth_date.split('-').reverse().join('/') : '-')}</td>
+          <td title="${escapeHtml(c.c6_observation)}">${escapeHtml(c.c6_status || 'PENDENTE')}<br><b>${escapeHtml(c.c6_financed_value || '-')}</b></td>
+          <td>
+            <button class="btn btn-outline" style="padding:4px 8px; font-size:12px;" onclick="openTransferModalSingle(${c.id})" title="Transferir Campanha">🔀</button>
+            <button class="btn btn-outline" style="padding:4px 8px; font-size:12px;" onclick="openEditModal(${c.id})">✏️</button>
+            <button class="btn btn-outline" style="padding:4px 8px; font-size:12px; color:var(--danger);" onclick="deleteSingleContact(${c.id})">🗑️</button>
+          </td>
+        </tr>
+      `).join('');
+
+      recentTbody.innerHTML = cachedContacts.slice(0, 5).map(c => `
+        <tr>
+          <td><b>${c.clean_name || '-'}</b></td>
+          <td>${c.phone}</td>
+          <td>${c.cpf || '-'}</td>
+          <td><span class="tag-status status-${(c.credline_status||'PENDENTE').replace(/\s+/g, '_')}">${c.credline_status||'PENDENTE'}</span></td>
+          <td><b>${c.financed_value || '-'}</b></td>
+          <td>${c.observation || '-'}</td>
+        </tr>
+      `).join('');
+    }
+
+    function escapeHtml(value) {
+      const el = document.createElement('span');
+      el.textContent = value == null ? '' : String(value);
+      return el.innerHTML.replace(/"/g, '&quot;');
+    }
+
+    // SHIFT + CLICK MULTI SELECTION LOGIC
+    function handleCheckboxClick(event, id, index) {
+      const numericId = parseInt(id);
+      const isChecked = event.target.checked;
+      const checkboxes = Array.from(document.querySelectorAll('.contact-checkbox'));
+
+      if (event.shiftKey && lastCheckedIndex !== null && lastCheckedIndex !== index) {
+        const start = Math.min(lastCheckedIndex, index);
+        const end = Math.max(lastCheckedIndex, index);
+
+        for (let i = start; i <= end; i++) {
+          const cb = checkboxes[i];
+          if (cb) {
+            cb.checked = isChecked;
+            const cbId = parseInt(cb.value);
+            if (isChecked) selectedContacts.add(cbId);
+            else selectedContacts.delete(cbId);
+          }
+        }
+      } else {
+        if (isChecked) selectedContacts.add(numericId);
+        else selectedContacts.delete(numericId);
+      }
+      lastCheckedIndex = index;
+    }
+
+    function toggleSelectAll(masterCb) {
+      const cbs = document.querySelectorAll('.contact-checkbox');
+      cbs.forEach(cb => {
+        cb.checked = masterCb.checked;
+        const id = parseInt(cb.value);
+        if (masterCb.checked) selectedContacts.add(id);
+        else selectedContacts.delete(id);
+      });
+    }
+
+    // BULK STATUS EDIT MODAL
+    function openBulkStatusModal() {
+      if (selectedContacts.size === 0) { alert('Selecione pelo menos uma lead para alterar o status em lote.'); return; }
+      document.getElementById('bulkStatusModal').classList.add('active');
+    }
+
+    function closeBulkStatusModal() {
+      document.getElementById('bulkStatusModal').classList.remove('active');
+    }
+
+    async function confirmBulkStatusChange() {
+      const newStatus = document.getElementById('bulkStatusSelect').value;
+      if (!newStatus) return;
+      const ids = Array.from(selectedContacts).map(i => parseInt(i));
+
+      const res = await fetch('/api/contacts/bulk-status', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ contact_ids: ids, credline_status: newStatus })
+      });
+      const data = await res.json();
+      closeBulkStatusModal();
+      alert(data.message || 'Status alterado em lote com sucesso!');
+      selectedContacts.clear();
+      document.getElementById('selectAllCheckbox').checked = false;
+      await loadStats();
+      await loadContacts();
+    }
+
+    async function populateTransferCampaignsSelect() {
+      const res = await fetch('/api/campaigns/');
+      const data = await res.json();
+      cachedCampaigns = data.campaigns || [];
+
+      const sel = document.getElementById('transferTargetCampaignSelect');
+      if (!cachedCampaigns || cachedCampaigns.length === 0) {
+        sel.innerHTML = '<option value="">Nenhuma campanha disponível</option>';
+        return;
+      }
+      sel.innerHTML = cachedCampaigns.map(c => `<option value="${c.id}">🎯 ${c.name}</option>`).join('');
+    }
+
+    async function openTransferModalForSelected() {
+      if (selectedContacts.size === 0) { alert('Selecione pelo menos uma lead para transferir.'); return; }
+      transferTargetIds = Array.from(selectedContacts).map(i => parseInt(i));
+      await populateTransferCampaignsSelect();
+      document.getElementById('transferModal').classList.add('active');
+    }
+
+    async function openTransferModalSingle(id) {
+      transferTargetIds = [parseInt(id)];
+      await populateTransferCampaignsSelect();
+      document.getElementById('transferModal').classList.add('active');
+    }
+
+    function closeTransferModal() {
+      document.getElementById('transferModal').classList.remove('active');
+      transferTargetIds = [];
+    }
+
+    async function confirmTransferLeads() {
+      const targetCampId = parseInt(document.getElementById('transferTargetCampaignSelect').value);
+      if (!targetCampId) { alert('Selecione uma campanha de destino.'); return; }
+
+      const res = await fetch('/api/contacts/transfer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          contact_ids: transferTargetIds,
+          target_campaign_id: targetCampId
+        })
+      });
+      const data = await res.json();
+      closeTransferModal();
+      alert(data.message || 'Leads transferidas com sucesso!');
+      selectedContacts.clear();
+      document.getElementById('selectAllCheckbox').checked = false;
+      await loadStats();
+      await loadContacts();
+    }
+
+    async function deleteSingleContact(id) {
+      if (!confirm('Deseja excluir este contato?')) return;
+      const res = await fetch(`/api/contacts/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      selectedContacts.delete(parseInt(id));
+      await loadStats();
+      await loadContacts();
+    }
+
+    async function deleteSelectedContacts() {
+      if (selectedContacts.size === 0) { alert('Nenhum contato selecionado.'); return; }
+      if (!confirm(`Excluir as ${selectedContacts.size} leads selecionadas?`)) return;
+      const ids = Array.from(selectedContacts).map(i => parseInt(i));
+
+      const res = await fetch('/api/contacts/bulk-delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ contact_ids: ids })
+      });
+      const data = await res.json();
+      alert(data.message || 'Contatos removidos com sucesso.');
+      selectedContacts.clear();
+      document.getElementById('selectAllCheckbox').checked = false;
+      await loadStats();
+      await loadContacts();
+    }
+
+    function openDeleteAllModal() { 
+      document.getElementById('deleteAllConfirmInput').value = '';
+      document.getElementById('deleteAllModal').classList.add('active'); 
+    }
+    function closeDeleteAllModal() { 
+      document.getElementById('deleteAllModal').classList.remove('active'); 
+    }
+
+    async function confirmDeleteAllLeads() {
+      const val = document.getElementById('deleteAllConfirmInput').value;
+      if (val !== 'DELETAR') { alert('Digite DELETAR para confirmar a exclusão total.'); return; }
+      const campId = document.getElementById('filterCampaign').value;
+
+      const res = await fetch('/api/contacts/delete-all', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ campaign_id: campId ? parseInt(campId) : null })
+      });
+      const data = await res.json();
+      closeDeleteAllModal();
+      alert(data.message || 'Todas as leads foram excluídas.');
+      selectedContacts.clear();
+      document.getElementById('selectAllCheckbox').checked = false;
+      await loadStats();
+      await loadContacts();
+    }
+
+    function openEditModal(id) {
+      const numericId = parseInt(id);
+      const c = cachedContacts.find(item => item.id === numericId);
+      if (!c) return;
+      document.getElementById('editLeadId').value = c.id;
+      document.getElementById('editCleanName').value = c.clean_name || '';
+      document.getElementById('editPhone').value = c.phone || '';
+      document.getElementById('editCpf').value = c.cpf || '';
+      document.getElementById('editBirthDate').value = c.birth_date || '';
+      document.getElementById('editEnrichmentStatus').value = c.enrichment_status || 'PENDENTE';
+      document.getElementById('editRetryC6').checked = false;
+      document.getElementById('editStatus').value = c.credline_status || 'PENDENTE';
+      document.getElementById('editFinancedValue').value = c.financed_value || '';
+      document.getElementById('editObservation').value = c.observation || '';
+      document.getElementById('editLeadModal').classList.add('active');
+    }
+
+    function closeEditModal() { document.getElementById('editLeadModal').classList.remove('active'); }
+
+    async function saveLeadEdit() {
+      const id = parseInt(document.getElementById('editLeadId').value);
+      const payload = {
+        clean_name: document.getElementById('editCleanName').value,
+        phone: document.getElementById('editPhone').value,
+        cpf: document.getElementById('editCpf').value,
+        birth_date: document.getElementById('editBirthDate').value || null,
+        enrichment_status: document.getElementById('editEnrichmentStatus').value || undefined,
+        retry_c6: document.getElementById('editRetryC6').checked,
+        credline_status: document.getElementById('editStatus').value,
+        financed_value: document.getElementById('editFinancedValue').value,
+        observation: document.getElementById('editObservation').value
+      };
+
+      const response = await fetch(`/api/contacts/${id}`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        alert(typeof error.detail === 'string' ? error.detail : 'Não foi possível salvar. Confira a data de nascimento e os demais campos.');
+        return;
+      }
+      closeEditModal();
+      await loadStats();
+      await loadContacts();
+    }
+
+    const dropzone = document.getElementById('dropzone');
+    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+    });
+
+    function handleFileSelect(e) {
+      if (e.target.files.length) uploadFile(e.target.files[0]);
+    }
+
+    async function uploadFile(file) {
+      const formData = new FormData();
+      formData.append('file', file);
+      const campId = document.getElementById('uploadCampaignSelect').value;
+      if (campId) formData.append('campaign_id', campId);
+
+      const res = await fetch('/api/automation/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+
+      if (data.status === 'success') {
+        const r = data.resultado;
+        document.getElementById('uploadResultCard').style.display = 'block';
+        document.getElementById('uploadResultSummary').innerHTML = `
+          <b>Planilha:</b> ${data.filename}<br>
+          <b>Total Lidas:</b> ${r.total_lidas} | <b>Adicionados no Banco:</b> ${r.adicionados} | <b>Ignorados (Regras):</b> ${r.ignorados} | <b>Duplicados:</b> ${r.duplicados}
+        `;
+        await loadStats();
+        await loadContacts();
+      } else {
+        alert('Erro ao enviar planilha: ' + (data.detail || 'Erro desconhecido'));
+      }
+    }
+
+    async function loadCampaigns() {
+      const res = await fetch('/api/campaigns/');
+      const data = await res.json();
+      cachedCampaigns = data.campaigns || [];
+
+      const select1 = document.getElementById('uploadCampaignSelect');
+      const select2 = document.getElementById('filterCampaign');
+      const grid = document.getElementById('campaignsListGrid');
+
+      select1.innerHTML = cachedCampaigns.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+      select2.innerHTML = '<option value="">Campanha: Todas</option>' + cachedCampaigns.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+
+      grid.innerHTML = cachedCampaigns.map(c => {
+        const isRunning = activeRunningMap.has(c.id);
+        return `
+          <div style="background:var(--panel-bg); border:1px solid ${isRunning ? '#bbf7d0' : 'var(--border-color)'}; padding:20px; border-radius:var(--radius-md); display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <h4 style="font-weight:700; font-size:16px;">🎯 ${c.name}</h4>
+                ${isRunning ? '<span class="status-badge running" style="padding:2px 8px; font-size:11px;">🟢 RODANDO</span>' : '<span class="status-badge stopped" style="padding:2px 8px; font-size:11px;">PARADA</span>'}
+              </div>
+              <p style="font-size:12px; color:var(--text-muted); margin-top:4px;">ID: #${c.id} | Status: ${c.status}</p>
+            </div>
+            <div style="display:flex; gap:8px;">
+              ${isRunning ? 
+                `<button class="btn btn-outline" style="color:var(--danger); border-color:#fca5a5; padding:6px 12px; font-size:12px;" onclick="stopCampaign(${c.id})">⏹️ Parar</button>` :
+                `<button class="btn btn-primary" style="padding:6px 12px; font-size:12px;" onclick="openLaunchCampaignModal(${c.id})">▶ Rodar</button>`
+              }
+              <button class="btn btn-outline" style="color:var(--danger); border-color:#fca5a5; padding:6px 12px; font-size:12px;" onclick="deleteCampaignItem(${c.id}, '${c.name.replace(/'/g, "\\'")}')">🗑️</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function createCampaign() {
+      const name = document.getElementById('newCampaignName').value;
+      if (!name) return;
+      await fetch('/api/campaigns/', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name})
+      });
+      document.getElementById('newCampaignName').value = '';
+      loadCampaigns();
+    }
+
+    async function deleteCampaignItem(id, name) {
+      if (!confirm(`Deseja realmente excluir a campanha "${name}" e todos os seus contatos associados?`)) return;
+      await fetch(`/api/campaigns/${id}`, { method: 'DELETE' });
+      await loadCampaigns();
+      await loadStats();
+      await loadContacts();
+    }
+
+    function openResetModal() { document.getElementById('resetModal').classList.add('active'); }
+    function closeResetModal() { document.getElementById('resetModal').classList.remove('active'); }
+    async function confirmResetDB() {
+      const val = document.getElementById('resetConfirmInput').value;
+      if (val !== 'DELETAR') { alert('Digite DELETAR para confirmar.'); return; }
+      await fetch('/api/automation/reset-db', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}) });
+      closeResetModal();
+      await loadStats();
+      await loadContacts();
+    }
+
+    function exportData() { window.location.href = '/api/automation/export'; }
+
+    let wsReconnectTimer = null;
+    let _wsDebounceTimer = null;
+    function initWS() {
+      if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+      const loc = window.location;
+      const wsUrl = (loc.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + loc.host + '/ws/progress';
+      try {
+        ws = new WebSocket(wsUrl);
+        ws.onmessage = (event) => {
+          // DEBOUNCE: Aguarda 2s sem novas mensagens antes de atualizar a UI
+          // Evita bombardear o backend com REST calls a cada contato processado
+          if (_wsDebounceTimer) clearTimeout(_wsDebounceTimer);
+          _wsDebounceTimer = setTimeout(() => {
+            loadStats();
+            if (currentTab === 'contacts') loadContacts();
+          }, 2000);
+        };
+        ws.onclose = () => {
+          wsReconnectTimer = setTimeout(initWS, 3000);
+        };
+        ws.onerror = () => {
+          try { ws.close(); } catch(e){}
+        };
+      } catch (e) {
+        wsReconnectTimer = setTimeout(initWS, 3000);
+      }
+    }
+
+    loadStats();
+    loadCampaigns();
+    initWS();
+    setInterval(loadStats, 8000);
+  </script>
+</body>
+</html>
