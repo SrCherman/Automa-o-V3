@@ -44,6 +44,21 @@ def test_currency(value, expected):
     assert str(c6.valor_monetario(value)) == expected
 
 
+@pytest.mark.parametrize("control,value,digits", [
+    ("valorDoVeiculo", "130.000,00", "13000000"),
+    ("valorDeEntrada", "13.000,00", "1300000"),
+])
+def test_currency_input_uses_mask_aware_key_entry(control, value, digits):
+    tab = Mock()
+    field = Mock(value="")
+    tab.ele.return_value = field
+
+    c6._input(tab, control, value)
+
+    field.input.assert_called_once_with(tuple(digits))
+    assert field.run_js.call_args_list[0].args[0] == "this.focus(); this.select();"
+
+
 @pytest.mark.parametrize("value,expected", [
     ("4499150670", "44999150670"),
     ("(44) 8915-0670", "44989150670"),

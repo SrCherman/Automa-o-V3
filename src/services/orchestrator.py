@@ -5,6 +5,8 @@ orchestrator.py - Orquestrador Multi-Campanhas Simultâneas com Isolamento Total
 import asyncio
 import threading
 import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from sqlalchemy import or_, and_, func
@@ -19,6 +21,14 @@ from src.automation.credline_scraper import consultar_credline_cpf
 from src.config import MIND7_URL, MIND7_CPF_URL, C6_PLATE, C6_VEHICLE_VALUE, C6_OPTIONS
 
 log = logging.getLogger("orchestrator")
+c6_log = logging.getLogger("orchestrator.c6")
+if not c6_log.handlers:
+    c6_path = Path(__file__).resolve().parents[2] / "logs" / "c6-auto.log"
+    c6_path.parent.mkdir(parents=True, exist_ok=True)
+    c6_handler = RotatingFileHandler(c6_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    c6_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    c6_log.addHandler(c6_handler)
+    c6_log.setLevel(logging.INFO)
 
 class ConnectionManager:
     def __init__(self):
@@ -309,7 +319,7 @@ class CampaignWorkerSession:
                 c.c6_status = "AGUARDANDO DADOS"
                 c.c6_observation = "Informe a data de nascimento antes de consultar"
                 db.commit()
-                log.info("[C6] contato=%s aguardando data de nascimento", contact_id)
+                c6_log.info("[C6] campanha=%s contato=%s aguardando data de nascimento", self.campaign_id, contact_id)
                 return
             cpf, phone, birth_date = c.cpf, c.phone, c.birth_date
             attempts = (c.c6_attempts or 0) + 1
@@ -344,8 +354,9 @@ class CampaignWorkerSession:
                      Contact.c6_observation: result.get("observation", ""), Contact.c6_processed_at: datetime.now(timezone.utc)},
                     synchronize_session=False)
                 db.commit()
-                log.info("[C6] contato=%s resultado=%s valor_financiado=%s",
-                         contact_id, result.get("status", "INDEFINIDO"), result.get("financed_value") or "—")
+                c6_log.info("[C6] campanha=%s contato=%s resultado=%s valor_financiado=%s",
+                            self.campaign_id, contact_id, result.get("status", "INDEFINIDO"),
+                            result.get("financed_value") or "—")
             except Exception as exc:
                 unavailable = isinstance(exc, C6Unavailable) and not submitted
                 current.filter(Contact.c6_status == ("AGUARDANDO RESULTADO" if submitted else "PROCESSANDO")).update(
@@ -353,8 +364,8 @@ class CampaignWorkerSession:
                      Contact.c6_attempts: attempts - 1 if unavailable else attempts},
                     synchronize_session=False)
                 db.commit()
-                log.warning("[C6] contato=%s estado=%s erro=%s", contact_id,
-                            "CONFERIR RESULTADO" if submitted else "ERRO", type(exc).__name__)
+                c6_log.warning("[C6] campanha=%s contato=%s estado=%s erro=%s", self.campaign_id, contact_id,
+                               "CONFERIR RESULTADO" if submitted else "ERRO", type(exc).__name__)
                 if isinstance(exc, C6Unavailable):
                     raise
                 return

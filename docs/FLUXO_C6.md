@@ -23,6 +23,8 @@ O C6 valida celular com DDD e nove dígitos. Telefones legados de 10 dígitos cu
 
 Valores exibidos junto de “Simulando”, “erro” ou “Selecione um valor permitido” são provisórios e não são gravados como aprovação. Se a tela não chegar a um resultado reconhecido após o envio, a consulta fica para conferência manual.
 
+Os resultados e falhas do C6 são registrados em `logs/c6-auto.log` e no log do servidor, com identificador do contato, status e valor financiado; CPF e telefone não são gravados nesse log.
+
 ## Base existente e retomada
 
 Abra `Iniciar_Produto.bat` e escolha **Etapa 4 - C6 Auto** ao iniciar a campanha. Essa opção complementa os dados por CPF e percorre o C6, preservando o Itaú. **Etapa 2 - Enriquecimento por CPF** também pode ser executada sozinha.

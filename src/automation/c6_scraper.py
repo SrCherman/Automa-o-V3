@@ -132,7 +132,11 @@ def _input(tab, control, value):
     field = tab.ele(f'css:input[formcontrolname="{control}"]', timeout=2)
     if not field:
         raise C6Unavailable(f"Campo C6 indisponível: {control}")
-    field.input(value, clear=True)
+    if control in ("valorDoVeiculo", "valorDeEntrada"):
+        field.run_js("this.focus(); this.select();")
+        field.input(tuple(str(int(valor_monetario(value) * 100))))
+    else:
+        field.input(value, clear=True)
     field.run_js("this.dispatchEvent(new Event('change', {bubbles:true})); this.blur();")
     return field
 
