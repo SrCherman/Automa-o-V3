@@ -17,8 +17,8 @@ from src.database.models import Contact, Campaign
 from src.automation.browser_factory import get_campaign_browser_page
 from src.automation.mind7_scraper import consultar_mind7_celular, consultar_mind7_cpf, Mind7Unavailable
 from src.automation.c6_scraper import consultar_c6_cpf, C6Unavailable
-from src.automation.credline_scraper import consultar_credline_cpf
-from src.config import MIND7_URL, MIND7_CPF_URL, C6_PLATE, C6_VEHICLE_VALUE, C6_OPTIONS
+from src.automation.credline_scraper import consultar_credline_cpf, _pegar_aba
+from src.config import MIND7_URL, MIND7_CPF_URL, CREDLINE_URL, C6_URL, C6_PLATE, C6_VEHICLE_VALUE, C6_OPTIONS
 
 log = logging.getLogger("orchestrator")
 c6_log = logging.getLogger("orchestrator.c6")
@@ -161,6 +161,14 @@ class CampaignWorkerSession:
         page = mind7_page if is_mind7 else None
         tab = None
         try:
+            if stage == "CREDLINE":
+                page = get_campaign_browser_page(self.campaign_id, "itau")
+                _pegar_aba(page, "new-simulator", CREDLINE_URL)
+            elif stage == "C6":
+                page = get_campaign_browser_page(self.campaign_id, "c6")
+                if not any("c6auto.com.br" in (t.url or "").lower() for t in page.get_tabs()):
+                    page.new_tab(C6_URL)
+
             while self.is_armed:
                 with SessionLocal() as db:
                     contact = self._next_contact(db, stage)

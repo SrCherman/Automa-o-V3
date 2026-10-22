@@ -321,7 +321,9 @@ def test_c6_ready_contact_does_not_open_mind7(database, monkeypatch):
     with database() as db:
         cid = contact(db, birth_date="1990-01-01", enrichment_status="CONCLUIDO")
     opened = []
-    monkeypatch.setattr(flow, "get_campaign_browser_page", lambda campaign, service: opened.append(service) or Mock())
+    page = Mock()
+    page.get_tabs.return_value = []
+    monkeypatch.setattr(flow, "get_campaign_browser_page", lambda campaign, service: opened.append(service) or page)
     def simulate(*args):
         args[-1]()
         return {"status": "APROVADO", "financed_value": "R$ 117.000,00"}
@@ -332,23 +334,32 @@ def test_c6_ready_contact_does_not_open_mind7(database, monkeypatch):
     w._thread.join(timeout=5)
     assert not w._thread.is_alive()
     assert opened == ["c6"]
+    page.new_tab.assert_called_once_with(flow.C6_URL)
     with database() as db:
         assert db.get(Contact, cid).c6_status == "APROVADO"
 
 
-def test_c6_without_birth_date_does_not_open_bank_browser(database, monkeypatch):
+@pytest.mark.parametrize("stage,service,url", [
+    ("C6", "c6", "https://c6auto.com.br/originacaolojista/shopkeeper-panel"),
+    ("CREDLINE", "itau", "https://www.credlineitau.com.br/new-simulator"),
+])
+def test_bank_stage_opens_browser_before_a_contact_is_ready(database, monkeypatch, stage, service, url):
     with database() as db:
         cid = contact(db, enrichment_status="INCOMPLETO")
     opened = []
-    monkeypatch.setattr(flow, "get_campaign_browser_page", lambda campaign, service: opened.append(service) or Mock())
-    w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", "C6")
+    page = Mock()
+    page.get_tabs.return_value = []
+    monkeypatch.setattr(flow, "get_campaign_browser_page", lambda campaign, service: opened.append(service) or page)
+    w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", stage)
     w._stop.wait = Mock()
     w.start()
     w._thread.join(timeout=5)
     assert not w._thread.is_alive()
-    assert opened == []
+    assert opened == [service]
+    page.new_tab.assert_called_once_with(url)
     with database() as db:
-        assert db.get(Contact, cid).c6_status == "AGUARDANDO DADOS"
+        expected = "AGUARDANDO DADOS" if stage == "C6" else "PENDENTE"
+        assert db.get(Contact, cid).c6_status == expected
 
 
 def test_ready_c6_does_not_wait_for_mind7_browser(database, monkeypatch):
@@ -362,7 +373,9 @@ def test_ready_c6_does_not_wait_for_mind7_browser(database, monkeypatch):
             release_mind7.wait(5)
             raise mind7.Mind7Unavailable("Login Mind7 pendente")
         c6_started.set()
-        return Mock()
+        page = Mock()
+        page.get_tabs.return_value = []
+        return page
     monkeypatch.setattr(flow, "get_campaign_browser_page", browser)
     monkeypatch.setattr(flow, "consultar_c6_cpf", Mock(side_effect=flow.C6Unavailable("Login C6 pendente")))
     w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", "C6")
