@@ -161,7 +161,22 @@ class CampaignWorkerSession:
         page = mind7_page if is_mind7 else None
         tab = None
         try:
-            if stage == "CREDLINE":
+            # Abra o Mind7 ao iniciar a etapa, mesmo sem contatos elegíveis.
+            # Coleta por celular e enriquecimento por CPF têm abas distintas
+            # e compartilham o mesmo perfil autenticado da campanha.
+            if is_mind7:
+                with self._mind7_lock:
+                    if page is None:
+                        if self._mind7_page is None:
+                            self._mind7_page = get_campaign_browser_page(self.campaign_id, "mind7")
+                        page = self._mind7_page
+                    target_url = MIND7_URL if stage == "MIND7" else MIND7_CPF_URL
+                    tab = next(
+                        (t for t in page.get_tabs()
+                         if (t.url or "").rstrip("/") == target_url.rstrip("/")),
+                        None,
+                    ) or page.new_tab(target_url)
+            elif stage == "CREDLINE":
                 page = get_campaign_browser_page(self.campaign_id, "itau")
                 _pegar_aba(page, "new-simulator", CREDLINE_URL)
             elif stage == "C6":
