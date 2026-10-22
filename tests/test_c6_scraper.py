@@ -112,7 +112,7 @@ def test_new_proposal_retries_click_if_panel_does_not_navigate(monkeypatch):
     create.click.side_effect = lambda: clicks.append(1)
     field = Mock(value="")
     monkeypatch.setattr(c6, "_button", lambda *args: create)
-    monkeypatch.setattr(c6, "_wait", lambda predicate, seconds=20: predicate())
+    monkeypatch.setattr(c6, "_wait", lambda predicate, seconds=20, stage=None: predicate())
     def element(selector, timeout=0):
         if 'plateNumber' in selector:
             return Mock() if len(clicks) == 2 else None
@@ -129,7 +129,7 @@ def test_login_accepts_direct_sso_return_to_panel(monkeypatch):
     start = Mock()
     start.click.side_effect = lambda: setattr(tab, "url", c6.C6_URL)
     tab.ele.side_effect = lambda selector, timeout=0: start if selector == "#submit-button" else None
-    monkeypatch.setattr(c6, "_wait", lambda predicate, seconds=20: predicate())
+    monkeypatch.setattr(c6, "_wait", lambda predicate, seconds=20, stage=None: predicate())
     c6._login(tab)
     start.click.assert_called_once()
 
@@ -153,7 +153,7 @@ def test_vehicle_type_retries_when_first_click_does_not_open_menu(monkeypatch):
     option.click.side_effect = lambda: setattr(select, "raw_text", "VEÍCULOS LEVES")
     tab.ele.return_value = select
     tab.eles.side_effect = lambda selector: [option] if select.click.call_count == 2 else []
-    monkeypatch.setattr(c6, "_wait", lambda predicate, seconds=20: predicate())
+    monkeypatch.setattr(c6, "_wait", lambda predicate, seconds=20, stage=None: predicate())
     c6._select_vehicle_type(tab, "VEÍCULOS LEVES")
     assert select.click.call_count == 2
     option.click.assert_called_once()
@@ -206,3 +206,48 @@ def test_missing_data_never_opens_portal():
     with pytest.raises(ValueError):
         c6.consultar_c6_cpf(page, "12345678901", "45999990000", "", "ABC1D23", "130.000,00", {}, Mock())
     page.get_tabs.assert_not_called()
+
+
+def test_c6_waits_longer_than_old_limit_and_logs_the_delay(monkeypatch, caplog):
+    now = [0.0]
+    monkeypatch.setattr(c6.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(c6.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    caplog.set_level("INFO", logger="orchestrator.c6")
+
+    tab = Mock(url=c6.C6_URL)
+    page = Mock()
+    page.get_tabs.return_value = [tab]
+    cnh = Mock()
+    cnh.states.is_checked = True
+    field = Mock(value="Loaded")
+    entry = Mock(value="")
+    def element(selector, timeout=0):
+        if "CNH" in selector:
+            return cnh
+        if "valorDeEntrada" in selector:
+            return entry
+        return field
+    tab.ele.side_effect = element
+    monkeypatch.setattr(c6, "iniciar_nova_consulta", lambda _: None)
+    monkeypatch.setattr(c6, "check_and_solve_cloudflare", lambda _: True)
+    monkeypatch.setattr(c6, "_select_uf", lambda *args: None)
+    monkeypatch.setattr(c6, "_select_vehicle_type", lambda *args: None)
+    monkeypatch.setattr(c6, "_input", lambda _, __, value: Mock(value=value, **{"attr.return_value": None}))
+
+    events = []
+    button = Mock()
+    button.attr.return_value = None
+    button.click.side_effect = lambda: events.append("click")
+    monkeypatch.setattr(c6, "_button", lambda *args: button)
+    def body(_):
+        if "click" not in events:
+            return ""
+        return "Simulando..." if now[0] < 60 else "Valor sugerido\nFinanciamento\nR$ 117.000,00"
+    monkeypatch.setattr(c6, "_body", body)
+
+    result = c6.consultar_c6_cpf(page, "12345678901", "5545999990000", "1990-01-01", "ABC1D23", "130.000,00",
+                                 {"entry_value": "", "uf": "PR", "has_cnh": True}, lambda: None)
+
+    assert now[0] >= 60
+    assert result["financed_value"] == "R$ 117.000,00"
+    assert "resultado da simulacao concluido_em=60.0s" in caplog.text

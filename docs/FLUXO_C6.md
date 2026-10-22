@@ -27,6 +27,8 @@ Os resultados e falhas do C6 são registrados em `logs/c6-auto.log` e no log do 
 
 ## Base existente e retomada
 
+A automação aguarda até 60 segundos por telas e campos do C6, 20 segundos pelas opções, 120 segundos pela consulta da placa e 180 segundos pelo resultado. Carregamentos demorados ou esgotados ficam registrados em `logs/c6-auto.log`. Se a resposta não chegar após o envio, o contato permanece para conferência manual e não recebe reenvio automático.
+
 Abra `Iniciar_Produto.bat` e escolha **Etapa 4 - C6 Auto** ao iniciar a campanha. Essa opção complementa os dados por CPF e percorre o C6, preservando o Itaú. **Etapa 2 - Enriquecimento por CPF** também pode ser executada sozinha.
 
 A atualização acrescenta as colunas à base existente, sem apagar contatos ou resultados. Antes da primeira alteração de uma base antiga, cria `data/database.before_c6.sqlite`. Os campos novos incluem nascimento, estado do enriquecimento, tentativas, observação e data; o C6 recebe status, valor financiado, observação, tentativas e data próprios.
