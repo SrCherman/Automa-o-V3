@@ -362,6 +362,23 @@ def test_bank_stage_opens_browser_before_a_contact_is_ready(database, monkeypatc
         assert db.get(Contact, cid).c6_status == expected
 
 
+@pytest.mark.parametrize("stage,url", [
+    ("MIND7", flow.MIND7_URL),
+    ("ENRIQUECIMENTO", flow.MIND7_CPF_URL),
+])
+def test_explicit_mind7_stage_opens_even_with_no_eligible_contacts(database, monkeypatch, stage, url):
+    opened = []
+    page = Mock()
+    page.get_tabs.return_value = []
+    monkeypatch.setattr(flow, "get_campaign_browser_page", lambda campaign, service: opened.append(service) or page)
+    w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", stage)
+    w.start()
+    w._thread.join(timeout=5)
+    assert not w._thread.is_alive()
+    assert opened == ["mind7"]
+    page.new_tab.assert_called_once_with(url)
+
+
 def test_ready_c6_does_not_wait_for_mind7_browser(database, monkeypatch):
     with database() as db:
         contact(db, birth_date="1990-01-01", enrichment_status="CONCLUIDO")

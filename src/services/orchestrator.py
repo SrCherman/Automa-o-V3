@@ -164,7 +164,7 @@ class CampaignWorkerSession:
             # Abra o Mind7 ao iniciar a etapa, mesmo sem contatos elegíveis.
             # Coleta por celular e enriquecimento por CPF têm abas distintas
             # e compartilham o mesmo perfil autenticado da campanha.
-            if is_mind7:
+            if is_mind7 and self.etapa_inicial in ("AUTO", "MIND7", "ENRIQUECIMENTO"):
                 with self._mind7_lock:
                     if page is None:
                         if self._mind7_page is None:
