@@ -557,3 +557,53 @@ def test_phone_parser_never_converts_year_or_unrelated_date_to_age():
     with_birth = mind7._extrair_candidatos_mind7(
         "CPF: 12345678901\nNOME: PESSOA EXEMPLO\nNASCIMENTO: 29/02/1988")
     assert with_birth[0]["birth_date"] == "1988-02-29"
+
+
+@pytest.mark.parametrize("stored,shown,valid", [
+    ("03375691939", "3375691939", True),
+    ("03375691939", "03375691939", True),
+    ("03375691939", "033.756.919-39", True),
+    ("03375691939", "3375691938", False),
+    ("13375691939", "3375691939", False),
+    ("03375691939", "03375691938", False),
+])
+def test_mind7_cpf_check_recovers_only_exact_missing_leading_zero(stored, shown, valid):
+    response = f"CPF: {shown}\nNOME: PESSOA TESTE\nNASCIMENTO: 29/02/1988"
+    if valid:
+        parsed = mind7.extrair_dados_cpf(response, stored)
+        assert parsed["cpf"] == stored and parsed["birth_date"] == "1988-02-29"
+    else:
+        with pytest.raises(ValueError):
+            mind7.extrair_dados_cpf(response, stored)
+
+
+def test_mind7_rejects_ambiguous_cpf_before_relatives():
+    response = ("CPF: 3375691939\nCPF: 12345678901\n"
+                "NASCIMENTO: 01/01/1990\n--- PARENTES: ---\nCPF: 98765432100")
+    with pytest.raises(ValueError):
+        mind7.extrair_dados_cpf(response, "03375691939")
+
+
+def test_explicit_enrichment_start_rearms_exhausted_errors_only(database, monkeypatch):
+    with database() as db:
+        ready_id = contact(db, enrichment_status="ERRO", enrichment_attempts=3, cpf="03375691939")
+        skipped_id = contact(db, phone="45999990001", cpf="01234567890",
+                             credline_status="SEM DADOS", enrichment_status="ERRO", enrichment_attempts=3)
+        completed_id = contact(db, phone="45999990002", cpf="01234567891",
+                               enrichment_status="CONCLUIDO", birth_date="1990-01-01", enrichment_attempts=1)
+    monkeypatch.setattr(flow.CampaignWorkerSession, "start", lambda self: setattr(self, "is_running", True))
+    orchestration = flow.MultiCampaignOrchestrator()
+    response = orchestration.start_campaign(1, etapa_inicial="ENRIQUECIMENTO")
+    assert response["status"] == "started"
+    assert response["rearmed_contacts"] == 1
+    with database() as db:
+        first = db.get(Contact, ready_id)
+        assert first.enrichment_status == "PENDENTE" and first.enrichment_attempts == 0
+        assert db.get(Contact, skipped_id).enrichment_attempts == 3
+        assert db.get(Contact, completed_id).birth_date == "1990-01-01"
+
+
+def test_explicit_enrichment_start_reports_empty_when_no_contacts(database):
+    response = flow.MultiCampaignOrchestrator().start_campaign(1, etapa_inicial="ENRIQUECIMENTO")
+    assert response["status"] == "empty"
+    assert "Nenhum contato elegível" in response["message"]

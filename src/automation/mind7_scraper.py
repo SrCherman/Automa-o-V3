@@ -41,10 +41,19 @@ def extrair_dados_cpf(texto: str, cpf: str) -> Dict[str, Any]:
         r"(?im)^\s*[-=]*\s*(?:PARENTES|POSS[ÍI]VEIS\s+VIZINHOS|VIZINHOS|RELACIONAMENTOS)\b[^\n]*",
         texto, maxsplit=1,
     )[0]
-    encontrados = {
-        re.sub(r"\D", "", m)
-        for m in re.findall(r"\bCPF\s*:\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})\b", texto, re.I)
-    }
+    # O Mind7 às vezes elimina o zero inicial ao exibir CPFs de 11 dígitos.
+    # Restaurar somente quando houver 10 dígitos e o CPF de entrada
+    # começar com zero. A confirmação exata continua obrigatória.
+    valores_cpf = re.findall(
+        r"(?im)^\s*CPF\s*:\s*(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{10,11})(?!\d)",
+        texto,
+    )
+    encontrados = set()
+    for value in valores_cpf:
+        digits = re.sub(r"\D", "", value)
+        if len(digits) == 10 and esperado.startswith("0"):
+            digits = "0" + digits
+        encontrados.add(digits)
     if encontrados != {esperado}:
         raise ValueError("Mind7 devolveu dados sem confirmação do CPF consultado")
     dados = {"cpf": esperado, "mind7_name": "", "birth_date": "", "cep": "", "house_number": ""}

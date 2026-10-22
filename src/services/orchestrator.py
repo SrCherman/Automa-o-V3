@@ -457,9 +457,35 @@ class MultiCampaignOrchestrator:
                 return {"status": "busy", "message": f"A campanha {campaign_id} já está rodando em segundo plano."}
 
             db = SessionLocal()
+            rearmed = 0
             try:
                 camp = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-                camp_name = camp.name if camp else f"Campanha #{campaign_id}"
+                if not camp:
+                    return {"status": "error", "message": "Campanha não encontrada."}
+                camp_name = camp.name
+                if etapa_inicial.upper() == "ENRIQUECIMENTO":
+                    # Um novo clique explícito em Etapa 2 renova o limite dos
+                    # contatos que já falharam. Nunca repetir automaticamente
+                    # num mesmo ciclo, nem reprocessar 'SEM DADOS'.
+                    rearmed = db.query(Contact).filter(
+                        Contact.campaign_id == campaign_id,
+                        Contact.cpf.isnot(None), Contact.cpf != "",
+                        func.coalesce(Contact.credline_status, "") != "SEM DADOS",
+                        Contact.enrichment_status == "ERRO",
+                        func.coalesce(Contact.enrichment_attempts, 0) >= 3,
+                    ).update({
+                        Contact.enrichment_status: "PENDENTE",
+                        Contact.enrichment_attempts: 0,
+                    }, synchronize_session=False)
+                    db.commit()
+                    preview = CampaignWorkerSession(
+                        campaign_id, camp_name, placa, valor, etapa_inicial)
+                    if preview._next_contact(db, "ENRIQUECIMENTO") is None:
+                        return {
+                            "status": "empty",
+                            "message": "Nenhum contato elegível para a etapa 2. Verifique os filtros e os CPFs cadastrados.",
+                            "rearmed_contacts": rearmed,
+                        }
             finally:
                 db.close()
 
@@ -481,7 +507,12 @@ class MultiCampaignOrchestrator:
                 "campaign_id": campaign_id,
                 "campaign_name": camp_name,
                 "etapa_inicial": etapa_inicial.upper(),
-                "message": f"Campanha '{camp_name}' iniciada em [{etapa_label}] com sucesso."
+                "rearmed_contacts": rearmed,
+                "message": (
+                    f"Campanha '{camp_name}' iniciada em [{etapa_label}]. "
+                    + (f"{rearmed} contato(s) com tentativas anteriores esgotadas foram liberados para nova consulta."
+                       if rearmed else "")
+                )
             }
 
     def stop_campaign(self, campaign_id: Optional[int] = None) -> dict:
