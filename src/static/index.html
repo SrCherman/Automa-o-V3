@@ -207,14 +207,14 @@
             </div>
           </div>
           <div class="metric-card" onclick="switchTab('contacts')">
-            <div class="metric-title">PROCESSADOS</div>
+            <div class="metric-title">BASE ANTERIOR PROCESSADA</div>
             <div class="metric-val-group">
               <div class="metric-val" id="statProcessados">0</div>
               <div class="metric-badge badge-up" id="statProgresso">0%</div>
             </div>
           </div>
           <div class="metric-card" onclick="switchTab('contacts')">
-            <div class="metric-title">APROVADOS (CRÉDITO)</div>
+            <div class="metric-title">APROVADOS NO ITAÚ</div>
             <div class="metric-val-group">
               <div class="metric-val" id="statAprovados">0</div>
               <div class="metric-badge badge-up" id="statTaxa">0%</div>
@@ -234,6 +234,7 @@
             <div class="panel-title">Status das Campanhas (Execução Simultânea)</div>
             <button class="btn btn-outline" onclick="stopAllCampaigns()" style="color:var(--danger); border-color:#fca5a5;">⏹️ Parar Todas</button>
           </div>
+          <div id="pipelineSummary" style="font-size:13px; color:var(--text-muted); margin-bottom:12px;"></div>
           <div id="runningCampaignsList" style="display:flex; flex-direction:column; gap:12px;"></div>
         </div>
 
@@ -422,10 +423,10 @@
             <option value="MIND7">🔍 Etapa 1 - Apenas Coleta de CPF (Mind7)</option>
             <option value="ENRIQUECIMENTO">🏡 Etapa 2 - Enriquecimento por CPF (Mind7)</option>
             <option value="CREDLINE">💳 Etapa 3 - Itaú Credline</option>
-            <option value="C6">💳 Etapa 4 - C6 Auto</option>
+            <option value="C6">💳 Etapa 4 - C6 Auto (inclui enriquecimento Mind7)</option>
           </select>
         </div>
-        <p style="font-size:12px; color:var(--text-muted);">C6: placa SEO7H39 · veículo R$ 130.000,00 · PR · com CNH · entrada em branco. O enriquecimento consulta todos os CPFs; os resultados dos bancos são independentes.</p>
+        <p style="font-size:12px; color:var(--text-muted);">C6: placa SEO7H39 · veículos leves · valor R$ 130.000,00 · PR · com CNH · entrada em branco. O enriquecimento consulta todos os CPFs; os resultados dos bancos são independentes.</p>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" onclick="closeLaunchCampaignModal()">Cancelar</button>
@@ -579,23 +580,32 @@
       document.getElementById('statReprovados').textContent = (stats.reprovados + stats.sem_dados) || 0;
       document.getElementById('statProgresso').textContent = stats.total ? Math.round((stats.processados/stats.total)*100)+'%' : '0%';
       document.getElementById('statTaxa').textContent = (stats.taxa_aprovacao || 0) + '%';
+      document.getElementById('pipelineSummary').textContent = `Nascimentos registrados: ${stats.birth_dates || 0}/${stats.cpfs_coletados || 0} CPFs · C6 concluídos: ${stats.c6_finished || 0} · C6 para conferência: ${stats.c6_review || 0}`;
 
       activeRunningMap.clear();
       if (state.running_campaigns) {
         state.running_campaigns.forEach(c => activeRunningMap.set(c.campaign_id, c));
       }
 
-      renderRunningCampaignsUI(state.running_campaigns || []);
+      renderRunningCampaignsUI(state.running_campaigns || [], state.paused_campaigns || []);
       if (currentTab === 'campaigns') loadCampaigns();
     }
 
-    function renderRunningCampaignsUI(runningList) {
+    function renderRunningCampaignsUI(runningList, pausedList = []) {
       const containerHeader = document.getElementById('activeCampaignsBadgesContainer');
       const containerPanel = document.getElementById('runningCampaignsList');
+      const stageNames = { MIND7: 'Coleta de CPF', ENRIQUECIMENTO: 'Enriquecimento Mind7', CREDLINE: 'Itaú', C6: 'C6 Auto', INICIALIZACAO: 'Inicialização' };
+      const pausedHtml = pausedList.map(c => `
+        <div role="status" style="background:#fffbeb; border:1px solid #fcd34d; padding:16px; border-radius:var(--radius-md);">
+          <b>Etapa pausada — ${escapeHtml(c.campaign_name)}</b>
+          ${Object.entries(c.stage_errors).map(([stage, message]) => `<div style="margin-top:6px;">${escapeHtml(stageNames[stage] || stage)}: ${escapeHtml(message)}</div>`).join('')}
+          <div style="margin-top:8px; font-size:13px;">Confira a aba do serviço e inicie a etapa novamente para retomar os contatos pendentes.</div>
+        </div>
+      `).join('');
 
       if (!runningList || runningList.length === 0) {
         containerHeader.innerHTML = '';
-        containerPanel.innerHTML = '<p style="color:var(--text-muted); font-size:14px;">Nenhuma campanha em execução no momento.</p>';
+        containerPanel.innerHTML = pausedHtml || '<p style="color:var(--text-muted); font-size:14px;">Nenhuma campanha em execução no momento.</p>';
         return;
       }
 
@@ -617,7 +627,7 @@
           </div>
           <button class="btn btn-outline" style="color:var(--danger); border-color:#fca5a5; padding:6px 12px; font-size:12px;" onclick="stopCampaign(${c.campaign_id})">⏹️ Parar Esta Campanha</button>
         </div>
-      `).join('');
+      `).join('') + pausedHtml;
     }
 
     // MULTI-CAMPAIGN LAUNCH MODAL

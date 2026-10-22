@@ -7,6 +7,7 @@ import time
 import logging
 from datetime import date, datetime
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse
 from src.config import MIND7_URL, MIND7_CPF_URL, MIND7_LOGIN_URL, MIND7_USER, MIND7_PASS
 from src.automation.cloudflare_solver import check_and_solve_cloudflare
 from src.ingestion.rules import calcular_score_nome, extrair_nome_real
@@ -59,6 +60,8 @@ def extrair_dados_cpf(texto: str, cpf: str) -> Dict[str, Any]:
 
 def _garantir_login_mind7(tab) -> bool:
     try:
+        if urlparse(tab.url).hostname != urlparse(MIND7_LOGIN_URL).hostname:
+            return False
         url_lower = tab.url.lower()
         if "acesso" in url_lower or "login" in url_lower:
             email_elem = tab.ele("@name=email", timeout=0.5) or tab.ele("@type=email", timeout=0.5) or tab.ele("#email", timeout=0.5)
@@ -96,6 +99,42 @@ def _pegar_aba(page, keyword: str, fallback_url: str):
         if keyword in tab.url.lower():
             return tab
     return page.new_tab(fallback_url)
+
+
+def _limpar_resultado_mind7(tab):
+    tab.run_js('''
+        const resultado = document.getElementById("conteudo-retorno");
+        if (resultado) resultado.replaceChildren();
+        const copiar = document.getElementById("copiar_dados");
+        if (copiar) copiar.value = "";
+    ''')
+
+
+def _aguardar_resultado_mind7(tab, seconds: float) -> Optional[str]:
+    deadline = time.monotonic() + seconds
+    anterior = ""
+    estavel_desde = time.monotonic()
+    while time.monotonic() < deadline:
+        botao = tab.ele("#botao-consultar", timeout=0)
+        copiar = tab.ele("#copiar_dados", timeout=0)
+        texto = (copiar.value or "").strip() if copiar else ""
+        resultado = tab.ele("#conteudo-retorno", timeout=0)
+        visivel = (resultado.raw_text or "").lower() if resultado and resultado.states.is_displayed else ""
+        sem_dados = any(msg in visivel for msg in (
+            "não foi possível encontrar", "nao foi possivel encontrar", "nenhum registro encontrado",
+        ))
+        # O portal reativa Consultar somente depois de inserir a resposta AJAX.
+        dados = texto if re.search(r"\b(?:cpf|cnpj)\s*:", texto, re.I) else ""
+        pronto = botao and botao.states.is_enabled and (dados or sem_dados)
+        atual = dados if dados else visivel if sem_dados else ""
+        if not pronto or atual != anterior:
+            anterior = atual if pronto else ""
+            estavel_desde = time.monotonic()
+        elif time.monotonic() - estavel_desde >= 1.0:
+            return dados or None
+        time.sleep(0.25)
+    raise TimeoutError(f"Mind7 não concluiu a consulta em {seconds:g}s")
+
 
 def extrair_numero_endereco(bloco_str: str) -> str:
     """Extrai o número do imóvel a partir do texto do endereço, evitando estritamente CEPs, anos, quadras e lotes."""
@@ -279,69 +318,22 @@ def _consultar_mind7_celular_browser_com_recovery(page, phone: str, clean_name: 
         if not campo:
             raise Mind7Unavailable("Formulário de telefone do Mind7 indisponível")
 
-        # 1. LIMPEZA RÍGIDA DO DOM PARA EVITAR DADOS VELHOS
-        tab.run_js('if(document.getElementById("copiar_dados")) document.getElementById("copiar_dados").value = "";')
-        tab.run_js('document.querySelectorAll("table").forEach(t => t.remove());')
-        tab.run_js('document.querySelectorAll(".list-group-item").forEach(t => t.remove());')
-        tab.run_js("""
-            document.querySelectorAll('.alert, .badge, .text-danger, span, p, div.alert-danger').forEach(el => {
-                if (el.children.length === 0 || el.classList.contains('alert') || el.classList.contains('text-danger')) {
-                    let txt = (el.textContent || '').toLowerCase();
-                    if (txt.includes('não foi possível') || txt.includes('nao foi possivel') || txt.includes('nenhum registro') || txt.includes('não encontrado')) {
-                        el.remove();
-                    }
-                }
-            });
-        """)
+        _limpar_resultado_mind7(tab)
 
         campo.input(phone, clear=True)
         time.sleep(0.3)
 
         botao = tab.ele("#botao-consultar", timeout=2)
-        if botao:
-            botao.click()
-            log.info(f"[MIND7] Clicou no botão de consultar para {phone}. Aguardando resultado...")
-        else:
-            campo.input("\n")
-            log.info(f"[MIND7] Enviou Enter para consultar {phone}. Aguardando resultado...")
+        if not botao:
+            raise Mind7Unavailable("Botão de consulta do Mind7 indisponível")
+        botao.click()
+        log.info(f"[MIND7] Clicou no botão de consultar para {phone}. Aguardando resultado...")
 
         tab.scroll.to_bottom()
 
-        start_time = time.time()
-        max_wait = 30.0
-        texto_copiar = ""
-        achou_resultado = False
-
-        while time.time() - start_time < max_wait:
-            elapsed = time.time() - start_time
-
-            copiar_area = tab.ele("#copiar_dados", timeout=0)
-            if copiar_area:
-                texto = copiar_area.value or ""
-                if "cpf:" in texto.lower() or "cnpj:" in texto.lower():
-                    # Aguardar estabilização do textarea do Mind7 (MODELO BASE)
-                    texto_anterior = ""
-                    for _ in range(6):
-                        time.sleep(0.5)
-                        texto_atual = tab.ele("#copiar_dados", timeout=1).value or ""
-                        if texto_atual == texto_anterior and texto_atual != "":
-                            break
-                        texto_anterior = texto_atual
-
-                    texto_copiar = texto_anterior if texto_anterior else texto
-                    achou_resultado = True
-                    log.info(f"[MIND7] Resultado carregado e estabilizado para {phone} em {elapsed:.1f}s")
-                    break
-
-            html_lower = (tab.html or "").lower()
-            if "não foi possível encontrar" in html_lower or "nao foi possivel encontrar" in html_lower or "nenhum registro encontrado" in html_lower:
-                log.info(f"[MIND7 SEM REGISTRO] Telefone {phone} sem dados no Mind7.")
-                return None
-
-            time.sleep(0.5)
-
-        if not achou_resultado:
-            raise TimeoutError("Mind7 não concluiu a consulta por telefone em 30s")
+        texto_copiar = _aguardar_resultado_mind7(tab, 30)
+        if texto_copiar is None:
+            return None
 
         candidatos = _extrair_candidatos_mind7(texto_copiar)
         if not candidatos:
@@ -391,58 +383,27 @@ def consultar_mind7_cpf(page, cpf: str, tab=None) -> Optional[Dict[str, Any]]:
 
         campo = tab.ele("#documento", timeout=4)
         if not campo:
-            raise Mind7Unavailable("Formulário de CPF do Mind7 indisponível")
+            # O portal às vezes abre o painel inicial no lugar da consulta por CPF.
+            tab.get(MIND7_CPF_URL)
+            if not check_and_solve_cloudflare(tab) or not _garantir_login_mind7(tab):
+                raise Mind7Unavailable("Mind7 aguarda login ou validação no navegador")
+            campo = tab.ele("#documento", timeout=4)
+            if not campo:
+                raise Mind7Unavailable("Formulário de CPF do Mind7 indisponível")
 
-        tab.run_js('if(document.getElementById("copiar_dados")) document.getElementById("copiar_dados").value = "";')
-        tab.run_js('document.querySelectorAll("table").forEach(t => t.remove());')
-        tab.run_js('document.querySelectorAll(".list-group-item").forEach(t => t.remove());')
-        tab.run_js("""
-            document.querySelectorAll('.alert, .badge, .text-danger, span, p, div.alert-danger').forEach(el => {
-                if (el.children.length === 0 || el.classList.contains('alert') || el.classList.contains('text-danger')) {
-                    let txt = (el.textContent || '').toLowerCase();
-                    if (txt.includes('não foi possível') || txt.includes('nao foi possivel') || txt.includes('nenhum registro') || txt.includes('não encontrado')) {
-                        el.remove();
-                    }
-                }
-            });
-        """)
+        _limpar_resultado_mind7(tab)
 
         campo.input(cpf, clear=True)
         time.sleep(0.2)
 
         botao = tab.ele("#botao-consultar", timeout=2)
-        if botao:
-            botao.click()
-        else:
-            campo.input("\n")
+        if not botao:
+            raise Mind7Unavailable("Botão de consulta do Mind7 indisponível")
+        botao.click()
 
-        start_time = time.time()
-        texto_copiar = ""
-        while time.time() - start_time < 25.0:
-            copiar_area = tab.ele("#copiar_dados", timeout=0)
-            if copiar_area:
-                texto = copiar_area.value or ""
-                if "cpf:" in texto.lower() or len(texto.strip()) > 30:
-                    # Aguardar estabilização do textarea
-                    texto_anterior = ""
-                    for _ in range(4):
-                        time.sleep(0.3)
-                        texto_atual = tab.ele("#copiar_dados", timeout=1).value or ""
-                        if texto_atual == texto_anterior and texto_atual != "":
-                            break
-                        texto_anterior = texto_atual
-                    texto_copiar = texto_anterior if texto_anterior else texto
-                    break
-
-            html_lower = (tab.html or "").lower()
-            if "não foi possível encontrar" in html_lower or "nao foi possivel encontrar" in html_lower or "nenhum registro encontrado" in html_lower:
-                log.info(f"[MIND7 CPF] CPF {cpf} sem registros no Mind7.")
-                return None
-
-            time.sleep(0.3)
-
-        if not texto_copiar:
-            raise TimeoutError("Mind7 não concluiu a consulta por CPF em 25s")
+        texto_copiar = _aguardar_resultado_mind7(tab, 25)
+        if texto_copiar is None:
+            return None
 
         return extrair_dados_cpf(texto_copiar, cpf)
     except Exception as exc:

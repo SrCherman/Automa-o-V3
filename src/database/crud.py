@@ -32,6 +32,7 @@ def list_campaigns(db: Session) -> List[Campaign]:
 def delete_campaign(db: Session, campaign_id: int) -> bool:
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if campaign:
+        _protect_contacts_for_deletion(db, db.query(Contact).filter(Contact.campaign_id == campaign_id))
         # Excluir logs de auditoria antes da campanha
         contact_ids = [c.id for c in campaign.contacts]
         if contact_ids:
@@ -45,6 +46,16 @@ def delete_campaign(db: Session, campaign_id: int) -> bool:
 
 class ContactQueryInProgress(ValueError):
     pass
+
+
+def _protect_contacts_for_deletion(db: Session, targets):
+    available = targets.filter(
+        func.coalesce(Contact.credline_status, "") != "PROCESSANDO",
+        func.coalesce(Contact.enrichment_status, "") != "PROCESSANDO",
+        ~func.coalesce(Contact.c6_status, "").in_(("PROCESSANDO", "AGUARDANDO RESULTADO")))
+    if available.update({Contact.id: Contact.id}, synchronize_session=False) != targets.count():
+        db.rollback()
+        raise ContactQueryInProgress("Aguarde as consultas terminarem antes de excluir os contatos.")
 
 
 def get_contact_by_id(db: Session, contact_id: int) -> Optional[Contact]:
@@ -96,14 +107,23 @@ def update_contact(db: Session, contact_id: int, data: Dict[str, Any]) -> Option
     if not contact:
         return None
 
-    if any(key in data and data[key] != getattr(contact, key) for key in ("cpf", "birth_date", "phone")) or data.get("retry_c6"):
-        available = db.query(Contact).filter(
-            Contact.id == contact_id,
-            func.coalesce(Contact.credline_status, "") != "PROCESSANDO",
-            func.coalesce(Contact.enrichment_status, "") != "PROCESSANDO",
-            ~func.coalesce(Contact.c6_status, "").in_(("PROCESSANDO", "AGUARDANDO RESULTADO")))
-        if "cpf" in data and data["cpf"] != contact.cpf and not data.get("retry_c6"):
-            available = available.filter(func.coalesce(Contact.c6_status, "") != "CONFERIR RESULTADO")
+    identity_changed = any(key in data and data[key] != getattr(contact, key) for key in ("cpf", "birth_date", "phone")) or data.get("retry_c6")
+    status_filters = [
+        or_(~func.coalesce(getattr(Contact, key), "").in_(active), getattr(Contact, key) == data[key])
+        for key, active in (("credline_status", ("PROCESSANDO",)),
+                            ("enrichment_status", ("PROCESSANDO",)),
+                            ("c6_status", ("PROCESSANDO", "AGUARDANDO RESULTADO")))
+        if data.get(key) is not None
+    ]
+    if identity_changed or status_filters:
+        available = db.query(Contact).filter(Contact.id == contact_id, *status_filters)
+        if identity_changed:
+            available = available.filter(
+                func.coalesce(Contact.credline_status, "") != "PROCESSANDO",
+                func.coalesce(Contact.enrichment_status, "") != "PROCESSANDO",
+                ~func.coalesce(Contact.c6_status, "").in_(("PROCESSANDO", "AGUARDANDO RESULTADO")))
+            if "cpf" in data and data["cpf"] != contact.cpf and not data.get("retry_c6"):
+                available = available.filter(func.coalesce(Contact.c6_status, "") != "CONFERIR RESULTADO")
         # A escrita mantém a linha protegida até o commit da edição.
         if not available.update({Contact.id: Contact.id}, synchronize_session=False):
             db.rollback()
@@ -148,6 +168,7 @@ def update_contact(db: Session, contact_id: int, data: Dict[str, Any]) -> Option
 def delete_contact(db: Session, contact_id: int) -> bool:
     contact = get_contact_by_id(db, contact_id)
     if contact:
+        _protect_contacts_for_deletion(db, db.query(Contact).filter(Contact.id == contact_id))
         db.query(AuditLog).filter(AuditLog.contact_id == contact_id).delete(synchronize_session=False)
         db.delete(contact)
         db.commit()
@@ -160,6 +181,7 @@ def bulk_delete_contacts(db: Session, contact_ids: List[int]) -> int:
     """
     if not contact_ids:
         return 0
+    _protect_contacts_for_deletion(db, db.query(Contact).filter(Contact.id.in_(contact_ids)))
     
     # Clean audit logs first
     db.query(AuditLog).filter(AuditLog.contact_id.in_(contact_ids)).delete(synchronize_session=False)
@@ -175,6 +197,7 @@ def delete_all_contacts(db: Session, campaign_id: Optional[int] = None) -> int:
     query = db.query(Contact)
     if campaign_id:
         query = query.filter(Contact.campaign_id == campaign_id)
+    _protect_contacts_for_deletion(db, query)
     
     target_subq = query.with_entities(Contact.id).subquery()
     db.query(AuditLog).filter(AuditLog.contact_id.in_(db.query(target_subq))).delete(synchronize_session=False)
@@ -183,18 +206,34 @@ def delete_all_contacts(db: Session, campaign_id: Optional[int] = None) -> int:
     return deleted
 
 def transfer_contacts_to_campaign(db: Session, contact_ids: List[int], target_campaign_id: int) -> int:
-    updated = db.query(Contact).filter(Contact.id.in_(contact_ids)).update(
+    if not contact_ids:
+        return 0
+    targets = db.query(Contact).filter(Contact.id.in_(contact_ids))
+    available = targets.filter(
+        func.coalesce(Contact.credline_status, "") != "PROCESSANDO",
+        func.coalesce(Contact.enrichment_status, "") != "PROCESSANDO",
+        ~func.coalesce(Contact.c6_status, "").in_(("PROCESSANDO", "AGUARDANDO RESULTADO")))
+    updated = available.update(
         {Contact.campaign_id: target_campaign_id}, synchronize_session=False
     )
+    if updated != targets.count():
+        db.rollback()
+        raise ContactQueryInProgress("Aguarde a consulta terminar antes de transferir os contatos selecionados.")
     db.commit()
     return updated
 
 def bulk_update_contacts_status(db: Session, contact_ids: List[int], status: str) -> int:
     if not contact_ids:
         return 0
-    updated = db.query(Contact).filter(Contact.id.in_(contact_ids)).update(
-        {Contact.credline_status: status.upper()}, synchronize_session=False
-    )
+    status = status.upper()
+    targets = db.query(Contact).filter(Contact.id.in_(contact_ids))
+    available = targets
+    if status != "PROCESSANDO":
+        available = available.filter(func.coalesce(Contact.credline_status, "") != "PROCESSANDO")
+    updated = available.update({Contact.credline_status: status}, synchronize_session=False)
+    if updated != targets.count():
+        db.rollback()
+        raise ContactQueryInProgress("Aguarde a consulta terminar antes de alterar o status dos contatos selecionados.")
     db.commit()
     return updated
 
@@ -211,7 +250,8 @@ def get_dashboard_stats(db: Session, campaign_id: Optional[int] = None) -> Dict[
         return {
             "total": 0, "processados": 0, "pendentes": 0, "cpfs_coletados": 0,
             "aprovados": 0, "nao_correntistas": 0, "correntistas": 0,
-            "reprovados": 0, "sem_dados": 0, "erros": 0, "duplicados": 0, "taxa_aprovacao": 0.0
+            "reprovados": 0, "sem_dados": 0, "erros": 0, "duplicados": 0, "taxa_aprovacao": 0.0,
+            "birth_dates": 0, "c6_finished": 0, "c6_review": 0
         }
 
     # QUERY ÚNICA GROUP BY PARA ALTA PERFORMANCE
@@ -236,6 +276,9 @@ def get_dashboard_stats(db: Session, campaign_id: Optional[int] = None) -> Dict[
 
     cpfs_coletados_subq = query.filter(and_(Contact.cpf.isnot(None), Contact.cpf != ""))
     cpfs_coletados = cpfs_coletados_subq.with_entities(func.count(Contact.id)).scalar()
+    birth_dates = cpfs_coletados_subq.filter(Contact.birth_date.isnot(None), Contact.birth_date != "").count()
+    c6_counts = dict(query.with_entities(Contact.c6_status, func.count(Contact.id)).group_by(Contact.c6_status).all())
+    c6_finished = sum(c6_counts.get(status, 0) for status in ("APROVADO", "FORA DA POLITICA", "DADOS INVALIDOS"))
     processados = total - pendentes
     taxa_aprovacao = round((aprovados / processados * 100), 1) if processados > 0 else 0.0
 
@@ -251,7 +294,9 @@ def get_dashboard_stats(db: Session, campaign_id: Optional[int] = None) -> Dict[
         "sem_dados": sem_dados,
         "erros": erros,
         "duplicados": duplicados,
-        "taxa_aprovacao": taxa_aprovacao
+        "taxa_aprovacao": taxa_aprovacao,
+        "birth_dates": birth_dates, "c6_finished": c6_finished,
+        "c6_review": c6_counts.get("CONFERIR RESULTADO", 0)
     }
 
 
@@ -259,12 +304,14 @@ def get_dashboard_stats(db: Session, campaign_id: Optional[int] = None) -> Dict[
 
 def reset_database(db: Session, campaign_id: Optional[int] = None) -> Dict[str, Any]:
     if campaign_id:
+        _protect_contacts_for_deletion(db, db.query(Contact).filter(Contact.campaign_id == campaign_id))
         target_subq = db.query(Contact.id).filter(Contact.campaign_id == campaign_id).subquery()
         db.query(AuditLog).filter(AuditLog.contact_id.in_(db.query(target_subq))).delete(synchronize_session=False)
         count = db.query(Contact).filter(Contact.campaign_id == campaign_id).delete(synchronize_session=False)
         db.commit()
         return {"status": "success", "message": f"Removidos {count} contatos da campanha {campaign_id}."}
     else:
+        _protect_contacts_for_deletion(db, db.query(Contact))
         audit_count = db.query(AuditLog).delete(synchronize_session=False)
         contacts_count = db.query(Contact).delete(synchronize_session=False)
         db.commit()

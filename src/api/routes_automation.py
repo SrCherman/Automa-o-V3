@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Literal
 from src.database.connection import get_db
-from src.database.crud import get_or_create_default_campaign, reset_database, get_dashboard_stats
+from src.database.crud import get_or_create_default_campaign, reset_database, get_dashboard_stats, ContactQueryInProgress
 from src.ingestion.parser import import_spreadsheet_from_bytes
 from src.services.orchestrator import orchestrator
 from src.services.export_service import export_contacts_to_excel
@@ -82,7 +82,10 @@ def stop_bot(payload: StopPayload = StopPayload()):
 def reset_db_endpoint(payload: ResetPayload, db: Session = Depends(get_db)):
     if not payload.confirm:
         raise HTTPException(status_code=400, detail="Confirmação obrigatória. Envie confirm=true para prosseguir.")
-    res = reset_database(db, campaign_id=payload.campaign_id)
+    try:
+        res = reset_database(db, campaign_id=payload.campaign_id)
+    except ContactQueryInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     stats = get_dashboard_stats(db, payload.campaign_id)
     return {**res, "stats": stats}
 

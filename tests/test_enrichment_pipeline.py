@@ -2,6 +2,7 @@ from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 import io
+import threading
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
@@ -11,7 +12,7 @@ from src.automation import mind7_scraper as mind7
 from src.automation import cloudflare_solver as cloudflare
 from src.database import connection
 from src.database.models import Campaign, Contact
-from src.database.crud import update_contact
+from src.database.crud import get_dashboard_stats, update_contact
 from src.services import orchestrator as flow
 from src.services.export_service import export_contacts_to_excel
 from openpyxl import load_workbook
@@ -120,6 +121,19 @@ def test_same_cpf_reuses_completed_lookup(database, monkeypatch):
         assert db.get(Contact, cid).birth_date == "1990-01-01"
 
 
+@pytest.mark.parametrize("cached_status", ["INCOMPLETO", "SEM DADOS"])
+def test_incomplete_cpf_cache_does_not_block_new_lookup(database, monkeypatch, cached_status):
+    with database() as db:
+        contact(db, enrichment_status=cached_status)
+        cid = contact(db, phone="45999990001")
+    lookup = Mock(return_value={"birth_date": "1990-01-01"})
+    monkeypatch.setattr(flow, "consultar_mind7_cpf", lookup)
+    worker()._enriquecer_contato_single(cid, Mock())
+    lookup.assert_called_once()
+    with database() as db:
+        assert db.get(Contact, cid).birth_date == "1990-01-01"
+
+
 def test_missing_birth_date_is_final_for_enrichment_but_waits_c6(database, monkeypatch):
     with database() as db:
         cid = contact(db, credline_status="CPF COLETADO")
@@ -160,6 +174,40 @@ def test_challenge_preserves_pending_instead_of_no_data(database, monkeypatch):
         assert c.enrichment_attempts == 0
 
 
+def test_cpf_lookup_recovers_when_mind7_opens_dashboard(monkeypatch):
+    campo = Mock()
+    botao = Mock()
+    class Tab:
+        url = "https://mind-7.org/painel/"
+        title = "MIND7 - Painel"
+        html = ""
+        navigations = 0
+
+        def get(self, url):
+            self.url = url if self.navigations else "https://mind-7.org/painel/"
+            self.navigations += 1
+
+        def ele(self, selector, timeout=0):
+            if selector == "#documento":
+                return campo if self.navigations == 2 else None
+            if selector == "#botao-consultar":
+                return botao
+            if selector == "#copiar_dados":
+                return SimpleNamespace(value="CPF: 12345678901\nNASCIMENTO: 01/01/1990")
+
+        def run_js(self, script):
+            pass
+
+    tab = Tab()
+    monkeypatch.setattr(mind7, "check_and_solve_cloudflare", lambda _: True)
+    monkeypatch.setattr(mind7, "_garantir_login_mind7", lambda _: True)
+    monkeypatch.setattr(mind7.time, "sleep", lambda _: None)
+    result = mind7.consultar_mind7_cpf(Mock(), "12345678901", tab=tab)
+    assert tab.navigations == 2
+    assert result["birth_date"] == "1990-01-01"
+    botao.click.assert_called_once()
+
+
 def test_c6_uncertain_submission_never_retries(database, monkeypatch):
     with database() as db:
         cid = contact(db, birth_date="1990-01-01", enrichment_status="CONCLUIDO")
@@ -192,7 +240,8 @@ def test_c6_result_independent_from_itau_and_persists(database, monkeypatch):
         assert c.credline_status == "REPROVADO"
     assert lookup.call_count == 1
     assert lookup.call_args.args[4:6] == ("SEO7H39", "130.000,00")
-    assert lookup.call_args.args[6] == {"entry_value": "", "uf": "PR", "has_cnh": True}
+    assert lookup.call_args.args[6] == {"entry_value": "", "uf": "PR", "has_cnh": True,
+                                        "vehicle_type": "VEÍCULOS LEVES"}
 
 
 def test_cpf_change_clears_results_from_previous_identity(database):
@@ -266,3 +315,146 @@ def test_manual_retry_requires_explicit_request(database):
         assert update_contact(db, cid, {"clean_name": "Nome corrigido"}).c6_status == "CONFERIR RESULTADO"
         c = update_contact(db, cid, {"retry_c6": True})
         assert (c.c6_status, c.c6_attempts) == ("PENDENTE", 0)
+
+
+def test_c6_ready_contact_does_not_open_mind7(database, monkeypatch):
+    with database() as db:
+        cid = contact(db, birth_date="1990-01-01", enrichment_status="CONCLUIDO")
+    opened = []
+    monkeypatch.setattr(flow, "get_campaign_browser_page", lambda campaign, service: opened.append(service) or Mock())
+    def simulate(*args):
+        args[-1]()
+        return {"status": "APROVADO", "financed_value": "R$ 117.000,00"}
+    monkeypatch.setattr(flow, "consultar_c6_cpf", simulate)
+    w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", "C6")
+    w._stop.wait = Mock()
+    w.start()
+    w._thread.join(timeout=5)
+    assert not w._thread.is_alive()
+    assert opened == ["c6"]
+    with database() as db:
+        assert db.get(Contact, cid).c6_status == "APROVADO"
+
+
+def test_c6_without_birth_date_does_not_open_bank_browser(database, monkeypatch):
+    with database() as db:
+        cid = contact(db, enrichment_status="INCOMPLETO")
+    opened = []
+    monkeypatch.setattr(flow, "get_campaign_browser_page", lambda campaign, service: opened.append(service) or Mock())
+    w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", "C6")
+    w._stop.wait = Mock()
+    w.start()
+    w._thread.join(timeout=5)
+    assert not w._thread.is_alive()
+    assert opened == []
+    with database() as db:
+        assert db.get(Contact, cid).c6_status == "AGUARDANDO DADOS"
+
+
+def test_ready_c6_does_not_wait_for_mind7_browser(database, monkeypatch):
+    with database() as db:
+        contact(db, birth_date="1990-01-01", enrichment_status="CONCLUIDO")
+        contact(db, phone="45999990001")
+    release_mind7 = threading.Event()
+    c6_started = threading.Event()
+    def browser(campaign, service):
+        if service == "mind7":
+            release_mind7.wait(5)
+            raise mind7.Mind7Unavailable("Login Mind7 pendente")
+        c6_started.set()
+        return Mock()
+    monkeypatch.setattr(flow, "get_campaign_browser_page", browser)
+    monkeypatch.setattr(flow, "consultar_c6_cpf", Mock(side_effect=flow.C6Unavailable("Login C6 pendente")))
+    w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", "C6")
+    w.start()
+    try:
+        assert c6_started.wait(1), "O navegador Mind7 bloqueou o worker C6"
+    finally:
+        release_mind7.set()
+        w._thread.join(timeout=5)
+    assert not w._thread.is_alive()
+
+
+def test_c6_login_pause_does_not_exhaust_attempts(database, monkeypatch):
+    with database() as db:
+        cid = contact(db, birth_date="1990-01-01", enrichment_status="CONCLUIDO")
+    monkeypatch.setattr(flow, "consultar_c6_cpf", Mock(side_effect=flow.C6Unavailable("Login C6 pendente")))
+    w = worker()
+    for _ in range(4):
+        with pytest.raises(flow.C6Unavailable):
+            w._simular_c6_single(cid, Mock())
+    with database() as db:
+        assert db.get(Contact, cid).c6_attempts == 0
+        assert w._next_contact(db, "C6").id == cid
+
+
+def test_restart_restores_pre_submit_c6_attempt(database):
+    with database() as db:
+        cid = contact(db, birth_date="1990-01-01", enrichment_status="CONCLUIDO",
+                      c6_status="PROCESSANDO", c6_attempts=3)
+    w = worker()
+    w._recover()
+    with database() as db:
+        c = db.get(Contact, cid)
+        assert (c.c6_status, c.c6_attempts) == ("PENDENTE", 2)
+        assert w._next_contact(db, "C6").id == cid
+
+
+def test_itau_response_cannot_attach_to_changed_identity(database, monkeypatch):
+    with database() as db:
+        cid = contact(db, enrichment_status="CONCLUIDO", birth_date="1990-01-01",
+                      credline_status="CPF COLETADO")
+    def simulate(*args):
+        with database() as db:
+            db.query(Contact).filter(Contact.id == cid).update(
+                {Contact.cpf: "98765432100", Contact.credline_status: "CPF COLETADO"},
+                synchronize_session=False)
+            db.commit()
+        return {"status": "CORRENTISTA", "financed_value": "R$ 50.000,00"}
+    monkeypatch.setattr(flow, "consultar_credline_cpf", simulate)
+    worker()._simular_itau_single(cid, Mock())
+    with database() as db:
+        c = db.get(Contact, cid)
+        assert (c.cpf, c.credline_status, c.financed_value) == ("98765432100", "CPF COLETADO", None)
+
+
+def test_worker_cannot_process_contact_moved_to_other_campaign(database, monkeypatch):
+    with database() as db:
+        db.add(Campaign(id=2, name="Other"))
+        cid = contact(db, enrichment_status="CONCLUIDO", birth_date="1990-01-01")
+        db.query(Contact).filter(Contact.id == cid).update({Contact.campaign_id: 2}, synchronize_session=False)
+        db.commit()
+    lookup = Mock()
+    monkeypatch.setattr(flow, "consultar_c6_cpf", lookup)
+    worker()._simular_c6_single(cid, Mock())
+    lookup.assert_not_called()
+    with database() as db:
+        assert db.get(Contact, cid).c6_status == "PENDENTE"
+
+
+def test_paused_mind7_reason_is_available_after_worker_stops(database, monkeypatch):
+    with database() as db:
+        contact(db)
+    page = Mock()
+    page.get_tabs.return_value = [SimpleNamespace(url=flow.MIND7_CPF_URL)]
+    monkeypatch.setattr(flow, "get_campaign_browser_page", lambda *args: page)
+    monkeypatch.setattr(flow, "consultar_mind7_cpf", Mock(side_effect=mind7.Mind7Unavailable("Abra o formulário CPF")))
+    w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", "ENRIQUECIMENTO")
+    w.start()
+    w._thread.join(timeout=5)
+    assert not w._thread.is_alive()
+    manager = flow.MultiCampaignOrchestrator()
+    manager.active_sessions[1] = w
+    state = manager.get_state(1)
+    assert state["is_running"] is False
+    assert state["paused_campaigns"][0]["stage_errors"]["ENRIQUECIMENTO"] == "Abra o formulário CPF"
+
+
+def test_dashboard_reports_birth_dates_and_c6_outcomes_separately(database):
+    with database() as db:
+        contact(db, birth_date="1990-01-01", enrichment_status="CONCLUIDO",
+                c6_status="APROVADO", phone="45999990000")
+        contact(db, c6_status="CONFERIR RESULTADO", phone="45999990001")
+        stats = get_dashboard_stats(db, 1)
+    assert stats["cpfs_coletados"] == 2
+    assert (stats["birth_dates"], stats["c6_finished"], stats["c6_review"]) == (1, 1, 1)

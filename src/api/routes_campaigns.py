@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 from src.database.connection import get_db
-from src.database.crud import list_campaigns, create_campaign, delete_campaign, get_or_create_default_campaign
+from src.database.crud import list_campaigns, create_campaign, delete_campaign, get_or_create_default_campaign, ContactQueryInProgress
 
 router = APIRouter(prefix="/api/campaigns", tags=["Campanhas"])
 
@@ -30,7 +30,10 @@ def add_campaign(payload: CampaignCreate, db: Session = Depends(get_db)):
 
 @router.delete("/{campaign_id}")
 def remove_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    ok = delete_campaign(db, campaign_id)
+    try:
+        ok = delete_campaign(db, campaign_id)
+    except ContactQueryInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail="Campanha não encontrada.")
     return {"status": "success", "message": "Campanha removida com sucesso."}

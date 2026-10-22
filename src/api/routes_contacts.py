@@ -106,7 +106,10 @@ def transfer_leads_endpoint(payload: TransferPayload, db: Session = Depends(get_
     if not payload.contact_ids:
         raise HTTPException(status_code=400, detail="Nenhum ID de contato fornecido.")
     
-    updated = transfer_contacts_to_campaign(db, payload.contact_ids, payload.target_campaign_id)
+    try:
+        updated = transfer_contacts_to_campaign(db, payload.contact_ids, payload.target_campaign_id)
+    except ContactQueryInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "status": "success",
         "message": f"{updated} lead(s) transferida(s) com sucesso.",
@@ -119,7 +122,10 @@ def delete_all_leads_endpoint(payload: DeleteAllPayload = DeleteAllPayload(), db
     """
     Exclui TODAS as leads do banco de dados (suporta POST e DELETE).
     """
-    deleted = delete_all_contacts(db, campaign_id=payload.campaign_id)
+    try:
+        deleted = delete_all_contacts(db, campaign_id=payload.campaign_id)
+    except ContactQueryInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     stats = get_dashboard_stats(db, campaign_id=payload.campaign_id)
     return {
         "status": "success",
@@ -132,19 +138,28 @@ def delete_all_leads_endpoint(payload: DeleteAllPayload = DeleteAllPayload(), db
 def bulk_remove_contacts(payload: BulkDeletePayload, db: Session = Depends(get_db)):
     if not payload.contact_ids:
         raise HTTPException(status_code=400, detail="Nenhum ID fornecido.")
-    deleted = bulk_delete_contacts(db, payload.contact_ids)
+    try:
+        deleted = bulk_delete_contacts(db, payload.contact_ids)
+    except ContactQueryInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "success", "message": f"{deleted} contatos removidos."}
 
 @router.post("/bulk-status")
 def bulk_update_status_endpoint(payload: BulkStatusPayload, db: Session = Depends(get_db)):
     if not payload.contact_ids:
         raise HTTPException(status_code=400, detail="Nenhum ID fornecido.")
-    updated = bulk_update_contacts_status(db, payload.contact_ids, payload.credline_status)
+    try:
+        updated = bulk_update_contacts_status(db, payload.contact_ids, payload.credline_status)
+    except ContactQueryInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "success", "message": f"Status de {updated} contatos alterado para '{payload.credline_status.upper()}'.", "updated_count": updated}
 
 @router.delete("/{contact_id}")
 def remove_contact(contact_id: int, db: Session = Depends(get_db)):
-    ok = delete_contact(db, contact_id)
+    try:
+        ok = delete_contact(db, contact_id)
+    except ContactQueryInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail="Contato não encontrado.")
     return {"status": "success", "message": "Contato deletado com sucesso."}

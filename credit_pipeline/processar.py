@@ -1679,7 +1679,7 @@ def etapa_enriquecimento(wb, ws, page_m):
     for row in range(2, ws.max_row + 1):
         cpf = re.sub(r"\D", "", str(ws.cell(row, 4).value or ""))
         status = ws.cell(row, cols["Status Enriquecimento"]).value
-        if cpf and status in ("CONCLUIDO", "INCOMPLETO", "SEM DADOS"):
+        if cpf and status == "CONCLUIDO" and ws.cell(row, cols["Data de Nascimento"]).value:
             cache[cpf] = {"birth_date": ws.cell(row, cols["Data de Nascimento"]).value,
                           "cep": ws.cell(row, 8).value, "house_number": ws.cell(row, 9).value}
     for row in range(2, ws.max_row + 1):
@@ -1694,7 +1694,8 @@ def etapa_enriquecimento(wb, ws, page_m):
             ws.cell(row, cols["Status Enriquecimento"], "PROCESSANDO")
             _salvar(wb)
             result = cache[cpf] if cpf in cache else consultar_mind7_cpf(page_m, cpf)
-            cache[cpf] = result
+            if result and result.get("birth_date"):
+                cache[cpf] = result
             if result:
                 for key, col in (("birth_date", cols["Data de Nascimento"]), ("cep", 8), ("house_number", 9)):
                     if result.get(key) and not ws.cell(row, col).value:
@@ -1754,6 +1755,8 @@ def etapa_c6(wb, ws, page):
             uncertain = ws.cell(row, cols["Status C6"]).value == "AGUARDANDO RESULTADO"
             ws.cell(row, cols["Status C6"], "CONFERIR RESULTADO" if uncertain else "ERRO")
             ws.cell(row, cols["Observacao C6"], str(exc)[:200])
+            if isinstance(exc, C6Unavailable) and not uncertain:
+                ws.cell(row, cols["Tentativas C6"], attempts)
             _salvar(wb)
             if isinstance(exc, C6Unavailable):
                 break

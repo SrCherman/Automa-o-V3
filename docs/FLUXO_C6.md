@@ -17,6 +17,8 @@ No painel, telefone e CPF usam abas fixas diferentes do mesmo navegador Mind7. A
 
 Esses dados do C6 ficam em `src/config.py`. Os campos de placa e valor no modal de início continuam configurando o Itaú. O C6 encerra a coleta ao encontrar o valor sugerido de **Financiamento**, sem avançar para contratação. A mensagem “Fora da Política” é um resultado do C6, sem valor financiado; não significa automaticamente CPF inválido.
 
+O formulário atual também exige **Tipo de veículo**. Para esta consulta, a automação seleciona **VEÍCULOS LEVES** e confirma a escolha antes de preencher a placa.
+
 Valores exibidos junto de “Simulando”, “erro” ou “Selecione um valor permitido” são provisórios e não são gravados como aprovação. Se a tela não chegar a um resultado reconhecido após o envio, a consulta fica para conferência manual.
 
 ## Base existente e retomada

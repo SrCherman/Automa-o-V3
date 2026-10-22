@@ -34,7 +34,7 @@ C6_USER = os.getenv("C6_USER", "")
 C6_PASS = os.getenv("C6_PASS", "")
 C6_PLATE = "SEO7H39"
 C6_VEHICLE_VALUE = "130.000,00"
-C6_OPTIONS = {"entry_value": "", "uf": "PR", "has_cnh": True}
+C6_OPTIONS = {"entry_value": "", "uf": "PR", "has_cnh": True, "vehicle_type": "VEÍCULOS LEVES"}
 
 # CREDENCIAIS DE ACESSO AOS PORTAIS
 MIND7_USER = os.getenv("MIND7_USER", "")

@@ -23,13 +23,13 @@ def create_campaign_browser_options(campaign_id: int, service_name: str = "mind7
 
     # PORTAS EXCLUSIVAS POR CAMPANHA PARA EVITAR CONFLITOS DE NAVEGAÇÃO
     # Exemplo: Campanha 1 -> Mind7 9222, Itaú 9223 | Campanha 2 -> Mind7 9224, Itaú 9225
-    offset = (campaign_id or 1) * 2
+    offset = campaign_id * 2
     if service_name.lower() == "mind7":
         debug_port = 9220 + offset
     elif service_name.lower() == "itau":
         debug_port = 9221 + offset
     elif service_name.lower() == "c6":
-        debug_port = 12000 + (campaign_id or 1)
+        debug_port = 12000 + campaign_id
     else:
         raise ValueError(f"Serviço de navegador desconhecido: {service_name}")
 
