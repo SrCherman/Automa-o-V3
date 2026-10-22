@@ -72,3 +72,28 @@ def test_legacy_login_pause_does_not_consume_c6_attempts(monkeypatch):
         legacy.etapa_c6(wb, ws, Mock())
     assert lookup.call_count == 4
     assert ws.cell(2, legacy._coluna(ws, "Tentativas C6")).value == 0
+
+
+def test_legacy_enrichment_skips_no_data_but_processes_rejected_and_approved(monkeypatch):
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Data", "Nome", "Telefone", "CPF", "Nome Mind7", "Status Itaú", "Obs", "CEP", "Numero", "Idade", "Valor"])
+    ws.append(["", "Sem dados", "", "12345678901", "", "SEM DADOS"])
+    ws.append(["", "Reprovado", "", "12345678902", "", "REPROVADO"])
+    ws.append(["", "Concluido sem nascimento", "", "12345678903", "", "CORRENTISTA"])
+    ws.append(["", "Enriquecimento sem dados", "", "12345678904", "", "PENDENTE"])
+    ws.cell(4, legacy._coluna(ws, "Status Enriquecimento"), "CONCLUIDO")
+    ws.cell(5, legacy._coluna(ws, "Status Enriquecimento"), "SEM DADOS")
+    lookup = Mock(return_value={
+        "mind7_name": "NOME VALIDADO", "birth_date": "1988-02-29",
+        "cep": "85800000", "house_number": "10"
+    })
+    monkeypatch.setattr(legacy, "consultar_mind7_cpf", lookup)
+    monkeypatch.setattr(legacy, "_salvar", lambda _: None)
+    legacy.etapa_enriquecimento(wb, ws, Mock())
+    assert lookup.call_count == 2
+    assert ws.cell(2, legacy._coluna(ws, "Data de Nascimento")).value is None
+    assert ws.cell(3, legacy._coluna(ws, "Data de Nascimento")).value == "1988-02-29"
+    assert ws.cell(4, legacy._coluna(ws, "Data de Nascimento")).value == "1988-02-29"
+    assert ws.cell(3, 5).value == "NOME VALIDADO"
+    assert ws.cell(3, 10).value is None

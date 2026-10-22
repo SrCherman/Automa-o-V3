@@ -4,6 +4,8 @@ Módulo responsável pelas operações de Web Scraping usando DrissionPage (Cone
 
 import os
 import time
+import re
+from datetime import date, datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 from typing import Dict, Any, Optional
 from app.config import settings
@@ -15,6 +17,25 @@ AUDIT_DIR = os.path.join(
     "credline_audit",
 )
 os.makedirs(AUDIT_DIR, exist_ok=True)
+
+
+def _data_nascimento_explicita(texto: str) -> str:
+    """Aceita somente data completa rotulada como nascimento, jamais ano ou idade."""
+    match = re.search(
+        r"\b(?:data\s+de\s+)?nasc(?:imento|\.)?\s*:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})",
+        texto, re.I,
+    )
+    if not match:
+        return ""
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            nascimento = datetime.strptime(match.group(1), fmt).date()
+            hoje = date.today()
+            if date(hoje.year - 120, 1, 1) <= nascimento <= hoje:
+                return nascimento.isoformat()
+        except ValueError:
+            continue
+    return ""
 
 
 def _audit_enabled() -> bool:
@@ -237,14 +258,7 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
             if cep_match:
                 cep = cep_match.group(1).replace("-", "")
                 
-            ano_nasc = ""
-            nasc_match = re.search(r"nasc(?:imento)?.*?(\d{2}/\d{2}/(\d{4}))", bloco, re.I)
-            if nasc_match:
-                ano_nasc = nasc_match.group(2)
-            else:
-                date_gen = re.search(r"\b\d{2}/\d{2}/(\d{4})\b", bloco)
-                if date_gen:
-                    ano_nasc = date_gen.group(1)
+            birth_date = _data_nascimento_explicita(bloco)
                     
             numero = extrair_numero_endereco(bloco)
             
@@ -254,7 +268,7 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
                     "cpf": cpf_limpo,
                     "cep": cep,
                     "numero_casa": numero,
-                    "ano_nascimento": ano_nasc
+                    "birth_date": birth_date
                 })
                 cpfs_ja_vistos.add(cpf_limpo)
 
@@ -278,10 +292,7 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
                         if cep_match:
                             cep = cep_match.group(1).replace("-", "")
                         
-                        ano_nasc = ""
-                        date_gen = re.search(r"\b\d{2}/\d{2}/(\d{4})\b", linha_txt)
-                        if date_gen:
-                            ano_nasc = date_gen.group(1)
+                        birth_date = _data_nascimento_explicita(linha_txt)
                             
                         numero = ""
                         digitos = re.findall(r"\b(\d{1,5})\b", linha_txt)
@@ -297,7 +308,7 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
                                 "cpf": cpf_limpo,
                                 "cep": cep,
                                 "numero_casa": numero,
-                                "ano_nascimento": ano_nasc
+                                "birth_date": birth_date
                             })
                             cpfs_ja_vistos.add(cpf_limpo)
 

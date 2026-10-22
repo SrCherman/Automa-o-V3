@@ -138,8 +138,21 @@ class CampaignWorkerSession:
                          func.coalesce(Contact.credline_status, "PENDENTE").in_(("PENDENTE", "")),
                          func.coalesce(Contact.mind7_attempts, 0) < 3)
         elif stage == "ENRIQUECIMENTO":
-            q = q.filter(has_cpf, func.coalesce(Contact.enrichment_status, "PENDENTE").in_(("PENDENTE", "ERRO")),
-                         func.coalesce(Contact.enrichment_attempts, 0) < 3)
+            # Consultar todos os CPFs, independente do resultado bancário,
+            # exceto contatos marcados SEM DADOS. Reavaliar incompletos e
+            # registros antigos CONCLUIDO que não têm nascimento confirmado.
+            without_birth = or_(Contact.birth_date.is_(None), Contact.birth_date == "")
+            pending = func.coalesce(Contact.enrichment_status, "PENDENTE").in_(
+                ("PENDENTE", "ERRO", "INCOMPLETO"))
+            old_completed_without_birth = and_(
+                Contact.enrichment_status == "CONCLUIDO", without_birth)
+            q = q.filter(
+                has_cpf,
+                func.coalesce(Contact.credline_status, "") != "SEM DADOS",
+                func.coalesce(Contact.enrichment_status, "") != "SEM DADOS",
+                or_(pending, old_completed_without_birth),
+                func.coalesce(Contact.enrichment_attempts, 0) < 3,
+            )
         elif stage == "CREDLINE":
             q = q.filter(has_cpf, Contact.enrichment_status.in_(self.ENRICHED),
                          func.coalesce(Contact.credline_status, "PENDENTE").in_(("PENDENTE", "", "CPF COLETADO", "PENDENTE ITAU")))
@@ -261,12 +274,16 @@ class CampaignWorkerSession:
     def _enriquecer_contato_single(self, contact_id, page, tab=None):
         with SessionLocal() as db:
             c = db.get(Contact, contact_id)
-            if not c or c.campaign_id != self.campaign_id or not c.cpf or not self.is_armed or c.enrichment_status in (*self.ENRICHED, "PROCESSANDO"):
+            if (not c or c.campaign_id != self.campaign_id or not c.cpf or not self.is_armed
+                    or c.credline_status == "SEM DADOS"
+                    or c.enrichment_status in ("SEM DADOS", "PROCESSANDO")
+                    or (c.enrichment_status == "CONCLUIDO" and c.birth_date)
+                    or (c.enrichment_attempts or 0) >= 3):
                 return
             cached = db.query(Contact).filter(Contact.cpf == c.cpf, Contact.id != c.id,
                                                Contact.enrichment_status == "CONCLUIDO",
                                                Contact.birth_date.isnot(None), Contact.birth_date != "").first()
-            cached = {k: getattr(cached, k) for k in ("birth_date", "cep", "house_number")} if cached else None
+            cached = {k: getattr(cached, k) for k in ("mind7_name", "birth_date", "cep", "house_number")} if cached else None
             cpf, birth_date = c.cpf, c.birth_date
             attempts = (c.enrichment_attempts or 0) + 1
             values = {}
@@ -285,7 +302,7 @@ class CampaignWorkerSession:
             try:
                 result = cached if cached is not None else consultar_mind7_cpf(page, cpf, tab=tab)
                 if result:
-                    for key in ("birth_date", "cep", "house_number"):
+                    for key in ("mind7_name", "birth_date", "cep", "house_number"):
                         if result.get(key):
                             values[key] = func.coalesce(func.nullif(getattr(Contact, key), ""), result[key])
                 has_birth_date = birth_date or (result or {}).get("birth_date")

@@ -34,7 +34,7 @@ HEADERS = [
     'Observacao',
     'CEP',
     'Numero',
-    'Idade',
+    'Data de Nascimento',
     'Valor Financiado'
 ]
 

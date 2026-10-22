@@ -13,7 +13,7 @@ import os, re, time, unicodedata, random
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.automation.mind7_scraper import consultar_mind7_cpf as consulta_cpf_compartilhada, Mind7Unavailable
+from src.automation.mind7_scraper import consultar_mind7_cpf as consulta_cpf_compartilhada, normalizar_nascimento, Mind7Unavailable
 from src.automation.c6_scraper import consultar_c6_cpf, C6Unavailable
 from src.config import C6_OPTIONS, C6_PLATE, C6_VEHICLE_VALUE
 from datetime import datetime
@@ -740,14 +740,11 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
             if cep_match:
                 cep = cep_match.group(1).replace("-", "")
                 
-            ano_nasc = ""
-            nasc_match = re.search(r"nasc(?:imento)?.*?(\d{2}/\d{2}/(\d{4}))", bloco, re.I)
-            if nasc_match:
-                ano_nasc = nasc_match.group(2)
-            else:
-                date_gen = re.search(r"\b\d{2}/\d{2}/(\d{4})\b", bloco)
-                if date_gen:
-                    ano_nasc = date_gen.group(1)
+            nasc_match = re.search(
+                r"\b(?:data\s+de\s+)?nasc(?:imento|\.)?\s*:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})",
+                bloco, re.I,
+            )
+            birth_date = normalizar_nascimento(nasc_match.group(1)) if nasc_match else ""
                     
             numero = extrair_numero_endereco(bloco)
             
@@ -757,7 +754,7 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
                     "cpf": cpf_limpo,
                     "cep": cep,
                     "numero": numero,
-                    "ano_nascimento": ano_nasc
+                    "birth_date": birth_date
                 })
                 cpfs_ja_vistos.add(cpf_limpo)
 
@@ -781,10 +778,11 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
                         if cep_match:
                             cep = cep_match.group(1).replace("-", "")
                         
-                        ano_nasc = ""
-                        date_gen = re.search(r"\b\d{2}/\d{2}/(\d{4})\b", linha_txt)
-                        if date_gen:
-                            ano_nasc = date_gen.group(1)
+                        nasc_match = re.search(
+                            r"\b(?:data\s+de\s+)?nasc(?:imento|\.)?\s*:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})",
+                            linha_txt, re.I,
+                        )
+                        birth_date = normalizar_nascimento(nasc_match.group(1)) if nasc_match else ""
                             
                         numero = ""
                         digitos = re.findall(r"\b(\d{1,5})\b", linha_txt)
@@ -800,7 +798,7 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
                                 "cpf": cpf_limpo,
                                 "cep": cep,
                                 "numero": numero,
-                                "ano_nascimento": ano_nasc
+                                "birth_date": birth_date
                             })
                             cpfs_ja_vistos.add(cpf_limpo)
 
@@ -849,7 +847,7 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
                     "nome": cand["nome"],
                     "cep": cand.get("cep", ""),
                     "numero": cand.get("numero", ""),
-                    "ano_nascimento": cand.get("ano_nascimento", ""),
+                    "birth_date": cand.get("birth_date", ""),
                     "score": score
                 })
                 cpfs_vistos.add(cand["cpf"])
@@ -1231,14 +1229,11 @@ def etapa_mind7(wb, ws, page_m):
                 ws.cell(row=row, column=7, value=f"Mind7: {len(resultados)} match(es)")
                 ws.cell(row=row, column=8, value=primeiro.get("cep", ""))
                 ws.cell(row=row, column=9, value=primeiro.get("numero", ""))
-                # Calcular idade a partir do ano de nascimento
-                ano_nasc = primeiro.get("ano_nascimento", "")
-                if ano_nasc:
-                    try:
-                        idade = datetime.now().year - int(ano_nasc)
-                        ws.cell(row=row, column=10, value=f"{idade} anos")
-                    except (ValueError, TypeError):
-                        ws.cell(row=row, column=10, value=ano_nasc)
+                # Registrar somente o nascimento real presente no Mind7.
+                # Nunca inferir uma data a partir da idade ou do ano isolado.
+                birth_date = normalizar_nascimento(primeiro.get("birth_date", ""))
+                if birth_date and not ws.cell(row=row, column=_coluna(ws, "Data de Nascimento")).value:
+                    ws.cell(row=row, column=_coluna(ws, "Data de Nascimento"), value=birth_date)
                 coletados += 1
         except Exception as e:
             print(f"    [!] Erro na coleta Mind7 para {nome}: {e}")
@@ -1684,9 +1679,12 @@ def etapa_enriquecimento(wb, ws, page_m):
                           "cep": ws.cell(row, 8).value, "house_number": ws.cell(row, 9).value}
     for row in range(2, ws.max_row + 1):
         cpf = re.sub(r"\D", "", str(ws.cell(row, 4).value or ""))
-        status = ws.cell(row, cols["Status Enriquecimento"]).value
+        status = str(ws.cell(row, cols["Status Enriquecimento"]).value or "").strip().upper()
+        bank_status = str(ws.cell(row, 6).value or "").strip().upper()
+        birth_date = ws.cell(row, cols["Data de Nascimento"]).value
         attempts = int(ws.cell(row, cols["Tentativas Enriquecimento"]).value or 0)
-        if len(cpf) != 11 or status in ("CONCLUIDO", "INCOMPLETO", "SEM DADOS") or attempts >= 3:
+        if (len(cpf) != 11 or bank_status == "SEM DADOS" or status == "SEM DADOS"
+                or (status == "CONCLUIDO" and birth_date) or attempts >= 3):
             continue
         ESTATISTICAS["enriquecimento"]["total"] += 1
         try:
@@ -1697,6 +1695,8 @@ def etapa_enriquecimento(wb, ws, page_m):
             if result and result.get("birth_date"):
                 cache[cpf] = result
             if result:
+                if result.get("mind7_name") and not ws.cell(row, 5).value:
+                    ws.cell(row, 5, result["mind7_name"])
                 for key, col in (("birth_date", cols["Data de Nascimento"]), ("cep", 8), ("house_number", 9)):
                     if result.get(key) and not ws.cell(row, col).value:
                         ws.cell(row, col, result[key])

@@ -134,7 +134,7 @@ def test_incomplete_cpf_cache_does_not_block_new_lookup(database, monkeypatch, c
         assert db.get(Contact, cid).birth_date == "1990-01-01"
 
 
-def test_missing_birth_date_is_final_for_enrichment_but_waits_c6(database, monkeypatch):
+def test_missing_birth_date_is_retried_before_c6(database, monkeypatch):
     with database() as db:
         cid = contact(db, credline_status="CPF COLETADO")
     monkeypatch.setattr(flow, "consultar_mind7_cpf", lambda *a, **kw: {"cep": "85800000"})
@@ -142,7 +142,7 @@ def test_missing_birth_date_is_final_for_enrichment_but_waits_c6(database, monke
     w._enriquecer_contato_single(cid, Mock())
     w._simular_c6_single(cid, Mock())
     with database() as db:
-        assert w._next_contact(db, "ENRIQUECIMENTO") is None
+        assert w._next_contact(db, "ENRIQUECIMENTO").id == cid
         assert w._next_contact(db, "CREDLINE").id == cid
         assert db.get(Contact, cid).c6_status == "AGUARDANDO DADOS"
         update_contact(db, cid, {"birth_date": "1990-01-01"})
@@ -345,7 +345,8 @@ def test_c6_ready_contact_does_not_open_mind7(database, monkeypatch):
 ])
 def test_bank_stage_opens_browser_before_a_contact_is_ready(database, monkeypatch, stage, service, url):
     with database() as db:
-        cid = contact(db, enrichment_status="INCOMPLETO")
+        # Enriquecimento já esgotou as tentativas: só o banco deve iniciar.
+        cid = contact(db, enrichment_status="INCOMPLETO", enrichment_attempts=3)
     opened = []
     page = Mock()
     page.get_tabs.return_value = []
@@ -488,3 +489,71 @@ def test_dashboard_reports_birth_dates_and_c6_outcomes_separately(database):
         stats = get_dashboard_stats(db, 1)
     assert stats["cpfs_coletados"] == 2
     assert (stats["birth_dates"], stats["c6_finished"], stats["c6_review"]) == (1, 1, 1)
+
+
+@pytest.mark.parametrize("bank_status", [
+    "PENDENTE", "CPF COLETADO", "REPROVADO", "CONSULTADO",
+    "NAO CORRENTISTA", "CORRENTISTA", "PENDENTE ITAU",
+])
+def test_enrichment_includes_every_bank_outcome_except_no_data(database, bank_status):
+    with database() as db:
+        cid = contact(db, credline_status=bank_status, enrichment_status="PENDENTE")
+        assert worker()._next_contact(db, "ENRIQUECIMENTO").id == cid
+
+
+@pytest.mark.parametrize("kwargs,eligible", [
+    ({"credline_status": "SEM DADOS"}, False),
+    ({"enrichment_status": "SEM DADOS"}, False),
+    ({"enrichment_status": "INCOMPLETO"}, True),
+    ({"enrichment_status": "CONCLUIDO", "birth_date": None}, True),
+    ({"enrichment_status": "CONCLUIDO", "birth_date": "1990-01-01"}, False),
+    ({"enrichment_status": "INCOMPLETO", "enrichment_attempts": 3}, False),
+    ({"cpf": None}, False),
+])
+def test_enrichment_queue_filters(database, kwargs, eligible):
+    with database() as db:
+        cid = contact(db, **kwargs)
+        item = worker()._next_contact(db, "ENRIQUECIMENTO")
+        assert (item is not None and item.id == cid) == eligible
+
+
+def test_incomplete_enrichment_retries_for_birth_date_but_never_invents_one(database, monkeypatch):
+    with database() as db:
+        cid = contact(db, credline_status="REPROVADO", age="36 anos")
+    lookup = Mock(return_value={"cep": "85800000", "house_number": "10"})
+    monkeypatch.setattr(flow, "consultar_mind7_cpf", lookup)
+    w = worker()
+    for _ in range(3):
+        with database() as db:
+            assert w._next_contact(db, "ENRIQUECIMENTO") is not None
+        w._enriquecer_contato_single(cid, Mock())
+    with database() as db:
+        record = db.get(Contact, cid)
+        assert record.birth_date is None
+        assert record.age == "36 anos"
+        assert record.cep == "85800000"
+        assert record.enrichment_attempts == 3
+        assert w._next_contact(db, "ENRIQUECIMENTO") is None
+    assert lookup.call_count == 3
+
+
+def test_cpf_parser_captures_subject_name_and_exact_birth_date():
+    text = ("CPF: 12345678901\nNOME COMPLETO: PESSOA EXEMPLO\n"
+            "NASCIMENTO: 29/02/1988\nReceita Federal: Rua Brasil, 120 CEP: 85800-000\n"
+            "--- PARENTES: ---\nNOME: OUTRA PESSOA\nNASCIMENTO: 01/01/1970")
+    dados = mind7.extrair_dados_cpf(text, "12345678901")
+    assert dados["mind7_name"] == "PESSOA EXEMPLO"
+    assert dados["birth_date"] == "1988-02-29"
+    assert dados["cep"] == "85800000"
+    assert dados["house_number"] == "120"
+    assert "age" not in dados
+
+
+def test_phone_parser_never_converts_year_or_unrelated_date_to_age():
+    text = "CPF: 12345678901\nNOME: PESSOA EXEMPLO\nAtualizacao: 02/02/2024"
+    only_name = mind7._extrair_candidatos_mind7(text)
+    assert only_name[0]["birth_date"] == ""
+    assert "age" not in only_name[0]
+    with_birth = mind7._extrair_candidatos_mind7(
+        "CPF: 12345678901\nNOME: PESSOA EXEMPLO\nNASCIMENTO: 29/02/1988")
+    assert with_birth[0]["birth_date"] == "1988-02-29"

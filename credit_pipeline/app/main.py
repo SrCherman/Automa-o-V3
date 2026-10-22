@@ -150,7 +150,7 @@ def _processar_pendentes():
                 nome_mind7 = dados_mind7["nome_completo"]
                 print(f"  Mind7: {nome_mind7} | CPF: {cpf}")
                 
-                # Gravar dados cadastrais adicionais na planilha (colunas 8, 9, 10)
+                # Gravar CEP, número e nascimento real em colunas identificadas pelo cabeçalho.
                 try:
                     import openpyxl
                     from app.services.planilha import FILE_PATH, _lock, _salvar_planilha
@@ -160,7 +160,22 @@ def _processar_pendentes():
                             ws_temp = wb_temp.active
                             ws_temp.cell(row=row_num, column=8, value=dados_mind7.get("cep", ""))
                             ws_temp.cell(row=row_num, column=9, value=dados_mind7.get("numero_casa", ""))
-                            ws_temp.cell(row=row_num, column=10, value=dados_mind7.get("ano_nascimento", ""))
+                            nascimento = dados_mind7.get("birth_date", "")
+                            if nascimento:
+                                try:
+                                    datetime.strptime(nascimento, "%Y-%m-%d")
+                                except (TypeError, ValueError):
+                                    nascimento = ""
+                            if nascimento:
+                                coluna = next(
+                                    (cell.column for cell in ws_temp[1] if cell.value == "Data de Nascimento"),
+                                    None,
+                                )
+                                if coluna is None:
+                                    coluna = ws_temp.max_column + 1
+                                    ws_temp.cell(row=1, column=coluna, value="Data de Nascimento")
+                                if not ws_temp.cell(row=row_num, column=coluna).value:
+                                    ws_temp.cell(row=row_num, column=coluna, value=nascimento)
                             _salvar_planilha(wb_temp)
                 except Exception as exc:
                     print(f"  Erro ao gravar dados adicionais na planilha: {exc}")

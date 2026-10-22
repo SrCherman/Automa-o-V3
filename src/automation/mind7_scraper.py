@@ -47,7 +47,10 @@ def extrair_dados_cpf(texto: str, cpf: str) -> Dict[str, Any]:
     }
     if encontrados != {esperado}:
         raise ValueError("Mind7 devolveu dados sem confirmação do CPF consultado")
-    dados = {"cpf": esperado, "birth_date": "", "cep": "", "house_number": ""}
+    dados = {"cpf": esperado, "mind7_name": "", "birth_date": "", "cep": "", "house_number": ""}
+    nome = re.search(r"(?im)^\s*NOME(?:\s+COMPLETO)?\s*:\s*(.+?)\s*$", texto)
+    if nome:
+        dados["mind7_name"] = nome.group(1).strip()
     nasc = re.search(r"\b(?:data\s+de\s+)?nasc(?:imento|\.)?\s*:?\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", texto, re.I)
     if nasc:
         dados["birth_date"] = normalizar_nascimento(nasc.group(1))
@@ -224,16 +227,11 @@ def _extrair_candidatos_mind7(texto: str) -> List[Dict[str, Any]]:
         if cep_match:
             cep = cep_match.group(1).replace("-", "")
 
-        age = ""
-        nasc_match = re.search(r"nasc(?:imento)?.*?(\d{2}/\d{2}/(\d{4}))", bloco, re.I)
-        if nasc_match:
-            try: age = f"{datetime.now().year - int(nasc_match.group(2))} anos"
-            except: pass
-        else:
-            date_gen = re.search(r"\b\d{2}/\d{2}/(\d{4})\b", bloco)
-            if date_gen:
-                try: age = f"{datetime.now().year - int(date_gen.group(1))} anos"
-                except: pass
+        nasc_match = re.search(
+            r"\b(?:data\s+de\s+)?nasc(?:imento|\.)?\s*:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})",
+            bloco, re.I,
+        )
+        birth_date = normalizar_nascimento(nasc_match.group(1)) if nasc_match else ""
 
         house_number = extrair_numero_endereco(bloco)
 
@@ -243,7 +241,7 @@ def _extrair_candidatos_mind7(texto: str) -> List[Dict[str, Any]]:
                 "nome": nome_raw,
                 "cep": cep,
                 "house_number": house_number,
-                "age": age
+                "birth_date": birth_date
             })
             cpfs_ja_vistos.add(cpf_limpo)
 
@@ -267,11 +265,11 @@ def _extrair_candidatos_mind7(texto: str) -> List[Dict[str, Any]]:
                     if cep_match:
                         cep = cep_match.group(1).replace("-", "")
 
-                    age = ""
-                    date_gen = re.search(r"\b\d{2}/\d{2}/(\d{4})\b", linha_txt)
-                    if date_gen:
-                        try: age = f"{datetime.now().year - int(date_gen.group(1))} anos"
-                        except: pass
+                    nasc_match = re.search(
+                        r"\b(?:data\s+de\s+)?nasc(?:imento|\.)?\s*:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})",
+                        linha_txt, re.I,
+                    )
+                    birth_date = normalizar_nascimento(nasc_match.group(1)) if nasc_match else ""
 
                     house_number = ""
                     digitos = re.findall(r"\b(\d{1,5})\b", linha_txt)
@@ -287,7 +285,7 @@ def _extrair_candidatos_mind7(texto: str) -> List[Dict[str, Any]]:
                             "nome": nome_raw,
                             "cep": cep,
                             "house_number": house_number,
-                            "age": age
+                            "birth_date": birth_date
                         })
                         cpfs_ja_vistos.add(cpf_limpo)
 
@@ -350,7 +348,7 @@ def _consultar_mind7_celular_browser_com_recovery(page, phone: str, clean_name: 
                     "nome": cand["nome"],
                     "cep": cand.get("cep", ""),
                     "house_number": cand.get("house_number", ""),
-                    "age": cand.get("age", ""),
+                    "birth_date": cand.get("birth_date", ""),
                     "score": score
                 })
 
