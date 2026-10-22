@@ -309,6 +309,7 @@ class CampaignWorkerSession:
                 c.c6_status = "AGUARDANDO DADOS"
                 c.c6_observation = "Informe a data de nascimento antes de consultar"
                 db.commit()
+                log.info("[C6] contato=%s aguardando data de nascimento", contact_id)
                 return
             cpf, phone, birth_date = c.cpf, c.phone, c.birth_date
             attempts = (c.c6_attempts or 0) + 1
@@ -342,6 +343,9 @@ class CampaignWorkerSession:
                     {Contact.c6_status: result["status"], Contact.c6_financed_value: result.get("financed_value"),
                      Contact.c6_observation: result.get("observation", ""), Contact.c6_processed_at: datetime.now(timezone.utc)},
                     synchronize_session=False)
+                db.commit()
+                log.info("[C6] contato=%s resultado=%s valor_financiado=%s",
+                         contact_id, result.get("status", "INDEFINIDO"), result.get("financed_value") or "—")
             except Exception as exc:
                 unavailable = isinstance(exc, C6Unavailable) and not submitted
                 current.filter(Contact.c6_status == ("AGUARDANDO RESULTADO" if submitted else "PROCESSANDO")).update(
@@ -349,10 +353,11 @@ class CampaignWorkerSession:
                      Contact.c6_attempts: attempts - 1 if unavailable else attempts},
                     synchronize_session=False)
                 db.commit()
+                log.warning("[C6] contato=%s estado=%s erro=%s", contact_id,
+                            "CONFERIR RESULTADO" if submitted else "ERRO", type(exc).__name__)
                 if isinstance(exc, C6Unavailable):
                     raise
                 return
-            db.commit()
 
 class MultiCampaignOrchestrator:
     def __init__(self):
