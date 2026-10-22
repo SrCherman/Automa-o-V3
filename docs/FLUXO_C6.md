@@ -19,6 +19,8 @@ Esses dados do C6 ficam em `src/config.py`. Os campos de placa e valor no modal 
 
 O formulário atual também exige **Tipo de veículo**. Para esta consulta, a automação seleciona **VEÍCULOS LEVES** e confirma a escolha antes de preencher a placa.
 
+O C6 valida celular com DDD e nove dígitos. Telefones legados de 10 dígitos cujo assinante começa por 8 ou 9 recebem o nono dígito apenas no valor enviado ao C6; o telefone original da base não é alterado. A Anatel registra a migração dos celulares para o formato `9XXXX-XXXX` ([regra do nono dígito](https://www.gov.br/anatel/pt-br/regulado/numeracao/codigos-nacionais/nono-digito)). Telefones fixos e formatos que não puderem ser identificados como celular continuam sem consulta.
+
 Valores exibidos junto de “Simulando”, “erro” ou “Selecione um valor permitido” são provisórios e não são gravados como aprovação. Se a tela não chegar a um resultado reconhecido após o envio, a consulta fica para conferência manual.
 
 ## Base existente e retomada

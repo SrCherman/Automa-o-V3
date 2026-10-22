@@ -29,6 +29,21 @@ def valor_monetario(value):
         raise ValueError("Valor monetário inválido") from exc
 
 
+def normalizar_celular_c6(value):
+    raw = str(value or "").strip()
+    if re.fullmatch(r"\d+\.0+", raw):
+        raw = raw.split(".", 1)[0]
+    phone = re.sub(r"\D", "", raw)
+    if phone.startswith("55") and len(phone) in (12, 13):
+        phone = phone[2:]
+    # Telefones legados de 10 dígitos com assinante 8/9 são celulares pré-migração.
+    if len(phone) == 10 and phone[2] in "89":
+        phone = phone[:2] + "9" + phone[2:]
+    if len(phone) != 11 or phone[2] != "9":
+        raise ValueError("Celular inválido para o C6")
+    return phone
+
+
 def extrair_resultado_c6(text):
     plain = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
     plain = re.sub(r"\s+", " ", plain)
@@ -161,14 +176,12 @@ def _select_vehicle_type(tab, vehicle_type):
 
 def consultar_c6_cpf(page, cpf, phone, birth_date, plate, vehicle_value, options, before_submit):
     cpf = re.sub(r"\D", "", cpf or "")
-    phone = re.sub(r"\D", "", phone or "")
-    if len(phone) == 13 and phone.startswith("55"):
-        phone = phone[2:]
+    phone = normalizar_celular_c6(phone)
     nascimento = normalizar_nascimento(birth_date)
     plate = re.sub(r"[^A-Z0-9]", "", (plate or "").upper())
     uf = str(options.get("uf", "")).upper()
-    if len(cpf) != 11 or len(set(cpf)) == 1 or len(phone) != 11 or not nascimento or len(plate) != 7:
-        raise ValueError("CPF, celular, nascimento ou placa inválidos para o C6")
+    if len(cpf) != 11 or len(set(cpf)) == 1 or not nascimento or len(plate) != 7:
+        raise ValueError("CPF, nascimento ou placa inválidos para o C6")
     if uf not in "AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO".split():
         raise ValueError("UF inválida para o C6")
     if options.get("has_cnh") not in (True, False, 0, 1):

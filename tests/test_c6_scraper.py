@@ -44,6 +44,24 @@ def test_currency(value, expected):
     assert str(c6.valor_monetario(value)) == expected
 
 
+@pytest.mark.parametrize("value,expected", [
+    ("4499150670", "44999150670"),
+    ("(44) 8915-0670", "44989150670"),
+    ("554499150670", "44999150670"),
+    ("5544999150670", "44999150670"),
+    ("44999150670", "44999150670"),
+    ("44999150670.0", "44999150670"),
+])
+def test_normalizar_celular_c6(value, expected):
+    assert c6.normalizar_celular_c6(value) == expected
+
+
+@pytest.mark.parametrize("value", ["4423456789", "4473456789", "449891506700", "44899150670"])
+def test_normalizar_celular_c6_rejects_fixed_or_malformed_numbers(value):
+    with pytest.raises(ValueError, match="Celular inválido"):
+        c6.normalizar_celular_c6(value)
+
+
 @pytest.mark.parametrize("value", ["", "-1", "1,234", "NaN"])
 def test_invalid_currency(value):
     with pytest.raises(ValueError):
