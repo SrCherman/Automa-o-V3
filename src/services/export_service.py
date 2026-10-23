@@ -11,7 +11,7 @@ from src.database.models import Contact
 
 HEADERS = [
     "ID", "Data Cadastro", "Campanha", "Telefone", "Nome WhatsApp", "Nome Contato", "Nome Limpo",
-    "CPF", "Nome Mind7", "Status Itaú", "Valor Financiado", "Observação", "CEP", "Número", "Data de Nascimento", "Data Processamento",
+    "CPF", "Nome Mind7", "Status Itaú", "Valor Financiado", "Observação", "CEP", "Número", "Data de Nascimento", "Idade", "Data Processamento",
     "Status Enriquecimento", "Observação Enriquecimento", "Status C6", "Valor Financiado C6", "Observação C6", "Data Consulta C6"
 ]
 
@@ -66,6 +66,7 @@ def export_contacts_to_excel(db: Session, campaign_id: Optional[int] = None, sta
             c.cep or "",
             c.house_number or "",
             c.birth_date or "",
+            c.age or "",
             c.processed_at.strftime("%Y-%m-%d %H:%M:%S") if c.processed_at else "",
             c.enrichment_status or "PENDENTE", c.enrichment_observation or "",
             c.c6_status or "PENDENTE", c.c6_financed_value or "", c.c6_observation or "",

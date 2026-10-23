@@ -319,7 +319,7 @@ class CampaignWorkerSession:
             cached = db.query(Contact).filter(Contact.cpf == c.cpf, Contact.id != c.id,
                                                Contact.enrichment_status == "CONCLUIDO",
                                                Contact.birth_date.isnot(None), Contact.birth_date != "").first()
-            cached = {k: getattr(cached, k) for k in ("mind7_name", "birth_date", "cep", "house_number")} if cached else None
+            cached = {k: getattr(cached, k) for k in ("mind7_name", "birth_date", "age", "cep", "house_number")} if cached else None
             cpf, birth_date = c.cpf, c.birth_date
             attempts = (c.enrichment_attempts or 0) + 1
             values = {}
@@ -338,7 +338,7 @@ class CampaignWorkerSession:
             try:
                 result = cached if cached is not None else consultar_mind7_cpf(page, cpf, tab=tab, stop_event=self._stop)
                 if result:
-                    for key in ("mind7_name", "birth_date", "cep", "house_number"):
+                    for key in ("mind7_name", "birth_date", "age", "cep", "house_number"):
                         if result.get(key):
                             values[key] = func.coalesce(func.nullif(getattr(Contact, key), ""), result[key])
                 has_birth_date = birth_date or (result or {}).get("birth_date")
@@ -503,6 +503,15 @@ class MultiCampaignOrchestrator:
                 if not camp:
                     return {"status": "error", "message": "Campanha não encontrada."}
                 camp_name = camp.name
+                if etapa_inicial.upper() == "MIND7":
+                    preview = CampaignWorkerSession(
+                        campaign_id, camp_name, placa, valor, etapa_inicial)
+                    if preview._next_contact(db, "MIND7") is None:
+                        return {
+                            "status": "empty",
+                            "message": "Nenhum contato elegível para a etapa 1. "
+                                       "Rode o enriquecimento ou confira os contatos sem CPF.",
+                        }
                 if etapa_inicial.upper() == "ENRIQUECIMENTO":
                     # Um novo clique explícito em Etapa 2 renova o limite dos
                     # contatos que já falharam. Nunca repetir automaticamente

@@ -327,3 +327,9 @@ def test_phone_candidate_name_stops_at_next_section():
     candidatos = scraper._extrair_candidatos_mind7(texto)
     assert candidatos[0]["cpf"] == "00018248055"
     assert candidatos[0]["nome"] == "MARCIA ADRIANE DOS SANTOS"
+
+def test_age_uses_portal_hint_or_birth_date():
+    com_idade = "CPF: 373.913.992-72\nNASCIMENTO\n02/08/1970 (56 anos)"
+    assert scraper.extrair_dados_cpf(com_idade, "37391399272")["age"] == "56"
+    so_data = "CPF: 373.913.992-72\nNASCIMENTO: 02/08/1970"
+    assert scraper.extrair_dados_cpf(so_data, "37391399272")["age"].isdigit()

@@ -76,6 +76,8 @@ def test_persistent_block_stops_start_and_worker_before_browser(database, monkey
     browser = Mock()
     monkeypatch.setattr(flow, "get_campaign_browser_page", browser)
     monkeypatch.setattr(flow, "probe_mind7_access", Mock(return_value=False))
+    with database() as db:
+        contact(db, cpf=None, credline_status="PENDENTE")
     orchestrator = flow.MultiCampaignOrchestrator()
     assert orchestrator.start_campaign(1, etapa_inicial="MIND7")["status"] == "started"
     assert orchestrator.get_state()["mind7_access_blocked"] is True
@@ -90,7 +92,7 @@ def test_persistent_block_stops_start_and_worker_before_browser(database, monkey
 def test_extraction_preserves_birth_date_and_cpf():
     result = mind7.extrair_dados_cpf("CPF: 123.456.789-01\nNASCIMENTO: 31/12/1990\nReceita Federal: Rua Brasil, 120 CEP: 85800-000", "12345678901")
     assert result["birth_date"] == "1990-12-31"
-    assert "age" not in result
+    assert result["age"].isdigit()
     assert (result["cep"], result["house_number"]) == ("85800000", "120")
 
 
@@ -344,9 +346,10 @@ def test_export_replaces_age_and_keeps_c6_separate(database):
         wb = load_workbook(io.BytesIO(export_contacts_to_excel(db)))
     rows = list(wb.active.values)
     headers = rows[0]
-    assert "Idade" not in headers
+    assert headers.count("Idade") == 1
     assert headers.count("Data de Nascimento") == 1
     assert rows[1][headers.index("Data de Nascimento")] == "1990-01-01"
+    assert rows[1][headers.index("Idade")] == "36 anos"
     assert rows[1][headers.index("Status Itaú")] == "REPROVADO"
     assert rows[1][headers.index("Valor Financiado C6")] == "R$ 117.000,00"
 
@@ -589,7 +592,7 @@ def test_cpf_parser_captures_subject_name_and_exact_birth_date():
     assert dados["birth_date"] == "1988-02-29"
     assert dados["cep"] == "85800000"
     assert dados["house_number"] == "120"
-    assert "age" not in dados
+    assert dados["age"].isdigit()
 
 
 def test_phone_parser_never_converts_year_or_unrelated_date_to_age():

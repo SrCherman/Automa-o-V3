@@ -740,7 +740,7 @@
           <td><span class="tag-status status-${(c.credline_status||'PENDENTE').replace(/\s+/g, '_')}">${c.credline_status||'PENDENTE'}</span></td>
           <td><b>${c.financed_value || '-'}</b></td>
           <td>${c.cep || '-'} ${c.house_number ? 'nº '+c.house_number : ''}</td>
-          <td title="${escapeHtml(c.enrichment_observation)}">${escapeHtml(c.enrichment_status || 'PENDENTE')}<br>${escapeHtml(c.birth_date ? c.birth_date.split('-').reverse().join('/') : '-')}</td>
+          <td title="${escapeHtml(c.enrichment_observation)}">${escapeHtml(c.enrichment_status || 'PENDENTE')}<br>${escapeHtml(c.birth_date ? c.birth_date.split('-').reverse().join('/') : '-')}${c.age ? ' · ' + escapeHtml(c.age) + ' anos' : ''}</td>
           <td title="${escapeHtml(c.c6_observation)}">${escapeHtml(c.c6_status || 'PENDENTE')}<br><b>${escapeHtml(c.c6_financed_value || '-')}</b></td>
           <td>
             <button class="btn btn-outline" style="padding:4px 8px; font-size:12px;" onclick="openTransferModalSingle(${c.id})" title="Transferir Campanha">🔀</button>

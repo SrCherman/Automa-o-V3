@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, and_
 from datetime import datetime
 from src.database.models import Campaign, Contact, AuditLog
+from src.automation.mind7_scraper import _idade
 
 # --- CAMPAIGNS ---
 
@@ -148,6 +149,8 @@ def update_contact(db: Session, contact_id: int, data: Dict[str, Any]) -> Option
     for key, value in data.items():
         if hasattr(contact, key) and (value is not None or key == "birth_date"):
             setattr(contact, key, value)
+    if "birth_date" in data and not changed_cpf:
+        contact.age = _idade(contact.birth_date or "")
     if "birth_date" in data and contact.birth_date and contact.enrichment_status in ("INCOMPLETO", "SEM DADOS"):
         contact.enrichment_status = "CONCLUIDO"
     if contact.c6_status == "AGUARDANDO DADOS" and "birth_date" in data:

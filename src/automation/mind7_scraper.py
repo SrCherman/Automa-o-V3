@@ -60,6 +60,20 @@ def normalizar_nascimento(value: str) -> str:
     return ""
 
 
+def _idade(nascimento_iso: str, texto: str = "") -> str:
+    """Idade pelo rótulo do portal; senão calculada da data de nascimento."""
+    achado = re.search(r"\b(\d{1,3})\s*anos\b", texto or "")
+    if achado and 0 <= int(achado.group(1)) <= 120:
+        return achado.group(1)
+    try:
+        nascimento = date.fromisoformat(nascimento_iso)
+    except ValueError:
+        return ""
+    hoje = date.today()
+    return str(hoje.year - nascimento.year
+               - ((hoje.month, hoje.day) < (nascimento.month, nascimento.day)))
+
+
 def _valores_rotulados(texto: str, rotulo: str, valor: str) -> List[str]:
     """Valores após rótulo, na mesma linha (tab/dois-pontos) ou na linha seguinte."""
     padrao = rf"(?im)^[ \t]*{rotulo}[ \t]*:?[ \t]*(?:$[ \t]*\n+[ \t]*)?({valor})"
@@ -86,7 +100,8 @@ def extrair_dados_cpf(texto: str, cpf: str) -> Dict[str, Any]:
         encontrados.add(digits)
     if encontrados != {esperado}:
         raise ValueError("Mind7 devolveu dados sem confirmação do CPF consultado")
-    dados = {"cpf": esperado, "mind7_name": "", "birth_date": "", "cep": "", "house_number": ""}
+    dados = {"cpf": esperado, "mind7_name": "", "birth_date": "", "age": "",
+             "cep": "", "house_number": ""}
     for nome in _valores_rotulados(texto, r"NOME(?:\s+COMPLETO)?(?!\s+D[AE]\b)", r"[^\n|]+"):
         nome = nome.strip()
         if nome and "COMPLETO" not in nome.upper():
@@ -97,6 +112,7 @@ def extrair_dados_cpf(texto: str, cpf: str) -> Dict[str, Any]:
         dados["birth_date"] = normalizar_nascimento(nasc)
         if dados["birth_date"]:
             break
+    dados["age"] = _idade(dados["birth_date"], texto)
     linhas = [l.strip() for l in texto.splitlines() if re.search(r"\b\d{5}-?\d{3}\b", l)]
     # Linhas de CPF também têm 8 dígitos e não são endereço.
     linhas = [l for l in linhas if not re.search(r"(?i)\bcpf\b", l)]
