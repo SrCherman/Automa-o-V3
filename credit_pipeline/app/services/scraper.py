@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from src.automation.mind7_rate_limit import Mind7AccessBlocked, ensure_mind7_allowed
-from src.automation.mind7_scraper import _verificar_bloqueio_mind7, _aguardar_resultado_mind7, _limpar_resultado_mind7, Mind7Unavailable, enviar_consulta_mind7
+from src.automation.mind7_scraper import _verificar_bloqueio_mind7, _limpar_resultado_mind7, Mind7Unavailable, enviar_consulta_mind7
 from datetime import date, datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 from typing import Dict, Any, Optional
@@ -176,12 +176,7 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
         if not botao:
             _verificar_bloqueio_mind7(tab)
             raise Mind7Unavailable("Botão de consulta Mind7 indisponível")
-        enviar_consulta_mind7(tab, botao)
-            
-        # Força rolagem da página para baixo (para ativar lazy load se existir)
-        tab.scroll.to_bottom()
-        
-        texto_copiar = _aguardar_resultado_mind7(tab, 25)
+        texto_copiar = enviar_consulta_mind7(tab, botao, timeout=25)
         if texto_copiar is None:
             return None
 

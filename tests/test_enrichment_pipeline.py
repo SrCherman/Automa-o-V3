@@ -220,6 +220,7 @@ def test_cpf_lookup_recovers_when_mind7_opens_dashboard(monkeypatch):
         url = "https://mind-7.org/painel/"
         title = "MIND7 - Painel"
         html = ""
+        scroll = Mock()
         navigations = 0
 
         def get(self, url):
@@ -240,6 +241,7 @@ def test_cpf_lookup_recovers_when_mind7_opens_dashboard(monkeypatch):
     tab = Tab()
     monkeypatch.setattr(mind7, "_garantir_login_mind7", lambda _: True)
     monkeypatch.setattr(mind7.time, "sleep", lambda _: None)
+    monkeypatch.setattr(mind7, "reserve_mind7_request", lambda **kwargs: kwargs["send"]())
     result = mind7.consultar_mind7_cpf(Mock(), "12345678901", tab=tab)
     assert tab.navigations == 2
     assert result["birth_date"] == "1990-01-01"

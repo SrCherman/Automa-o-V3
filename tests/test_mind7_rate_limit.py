@@ -14,29 +14,34 @@ from src.automation import mind7_rate_limit as quota
 from src.automation import mind7_scraper as scraper
 
 
-def test_quota_limits_20_requests_per_5_min_and_15s_spacing(tmp_path):
+def test_cycle_pauses_after_completion_without_fixed_maximum(tmp_path):
     clock = [1000.0]
     sleeps = []
+    sends = []
     def wait(seconds):
         sleeps.append(seconds)
         clock[0] += seconds
     ledger = tmp_path / "rate.sqlite"
     flag = tmp_path / "blocked"
-    for i in range(21):
+    for _ in range(41):
         quota.reserve_mind7_request(
             ledger_file=ledger, block_file=flag,
             clock=lambda: clock[0], sleep=wait,
+            send=lambda: sends.append(clock[0]),
         )
     with sqlite3.connect(ledger) as db:
         timestamps = [r[0] for r in db.execute("SELECT sent_at FROM requests ORDER BY sent_at")]
-    assert timestamps[-1] == pytest.approx(1300.0)
-    assert len(timestamps) == 20
-    assert all(b - a >= 15 for a, b in zip(timestamps, timestamps[1:]))
+    assert timestamps[-1] == pytest.approx(1070.0)
+    assert len(timestamps) == 41
+    assert sends[:9] == [1000, 1001, 1003, 1004, 1007, 1008, 1010, 1011, 1014]
+    assert all(b - a >= quota.PAUSE_CYCLE_SECONDS[i % 4]
+               for i, (a, b) in enumerate(zip(sends, sends[1:])))
+    assert sends[-1] - sends[0] < 300  # 41 envios simulados, sem teto fixo
     assert len(sleeps) > 0
 
 
 def test_shared_quota_serializes_concurrent_submissions(tmp_path, monkeypatch):
-    monkeypatch.setattr(quota, "MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(quota, "PAUSE_CYCLE_SECONDS", (0,))
     ledger = tmp_path / "rate.sqlite"
     flag = tmp_path / "blocked"
     def reserve(_):
@@ -87,9 +92,54 @@ def test_failed_send_counts_and_delayed_send_keeps_spacing(tmp_path):
         quota.reserve_mind7_request(send=uncertain_send, **options)
     calls = []
     quota.reserve_mind7_request(send=lambda: calls.append(now[0]), **options)
-    assert calls == [1045.0]
+    assert calls == [1031.0]
     with sqlite3.connect(ledger) as db:
-        assert db.execute("SELECT sent_at FROM requests ORDER BY sent_at").fetchall() == [(1030.0,), (1045.0,)]
+        assert db.execute("SELECT sent_at FROM requests ORDER BY sent_at").fetchall() == [(1030.0,), (1031.0,)]
+
+
+def test_restart_preserves_next_pause_and_cycle_position(tmp_path):
+    now = [1000.0]
+    ledger, flag = tmp_path / "quota.sqlite", tmp_path / "blocked"
+    sends = []
+    def wait(seconds):
+        now[0] += seconds
+    options = dict(ledger_file=ledger, block_file=flag, clock=lambda: now[0], sleep=wait)
+    for _ in range(2):
+        quota.reserve_mind7_request(send=lambda: sends.append(now[0]), **options)
+    with sqlite3.connect(ledger) as db:
+        assert db.execute("SELECT next_index, ready_at FROM cadence").fetchall() == [(2, 1003.0)]
+    quota.reserve_mind7_request(send=lambda: sends.append(now[0]), **options)
+    assert sends == [1000.0, 1001.0, 1003.0]
+
+
+def test_existing_ledger_preserves_cadence_during_migration(tmp_path):
+    now = [1000.0]
+    ledger, flag = tmp_path / "quota.sqlite", tmp_path / "blocked"
+    with sqlite3.connect(ledger) as db:
+        db.execute("CREATE TABLE requests (sent_at REAL NOT NULL)")
+        db.executemany("INSERT INTO requests VALUES (?)", [(1000.0,)] * 40)
+    def wait(seconds):
+        now[0] += seconds
+    sends = []
+    quota.reserve_mind7_request(
+        ledger_file=ledger, block_file=flag, clock=lambda: now[0], sleep=wait,
+        send=lambda: sends.append(now[0]))
+    assert sends == [1001.0]
+
+
+def test_loading_time_finishes_before_cooldown_starts(tmp_path):
+    now = [1000.0]
+    ledger, flag = tmp_path / "quota.sqlite", tmp_path / "blocked"
+    def wait(seconds):
+        now[0] += seconds
+    def complete_response():
+        now[0] += 30
+        return "response"
+    options = dict(ledger_file=ledger, block_file=flag, clock=lambda: now[0], sleep=wait)
+    assert quota.reserve_mind7_request(send=complete_response, **options) == "response"
+    sends = []
+    quota.reserve_mind7_request(send=lambda: sends.append(now[0]), **options)
+    assert sends == [1031.0]
 
 
 def test_block_or_cancel_while_waiting_prevents_send(tmp_path):
@@ -116,14 +166,12 @@ def test_block_or_cancel_while_waiting_prevents_send(tmp_path):
         send.assert_not_called()
 
 
-def test_independent_processes_share_spacing_window_and_restart_state(tmp_path):
+def test_independent_processes_share_cadence_and_restart_state(tmp_path):
     script = '''
 from pathlib import Path
 import sys, time
 from src.automation import mind7_rate_limit as q
-q.MIN_INTERVAL_SECONDS = 0.2
-q.MAX_PER_WINDOW = 2
-q.WINDOW_SECONDS = 0.8
+q.PAUSE_CYCLE_SECONDS = (0.2,)
 root = Path(sys.argv[1])
 def send():
     with (root / "events").open("a") as out:
@@ -141,7 +189,6 @@ q.reserve_mind7_request(ledger_file=root / "quota.sqlite", block_file=root / "bl
     timestamps = [float(line) for line in (tmp_path / "events").read_text().splitlines()]
     assert len(timestamps) == 5
     assert all(b - a >= 0.19 for a, b in zip(timestamps, timestamps[1:]))
-    assert all(b - a >= 0.79 for a, b in zip(timestamps, timestamps[2:]))
 
 
 def test_process_death_during_send_requires_persistent_manual_review(tmp_path):

@@ -13,7 +13,7 @@ import os, re, time, unicodedata, random
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.automation.mind7_scraper import consultar_mind7_cpf as consulta_cpf_compartilhada, normalizar_nascimento, Mind7Unavailable, _verificar_bloqueio_mind7, enviar_consulta_mind7
+from src.automation.mind7_scraper import consultar_mind7_cpf as consulta_cpf_compartilhada, normalizar_nascimento, Mind7Unavailable, _verificar_bloqueio_mind7, _limpar_resultado_mind7, enviar_consulta_mind7
 from src.automation.mind7_rate_limit import Mind7AccessBlocked, ensure_mind7_allowed
 from src.automation.c6_scraper import consultar_c6_cpf, C6Unavailable
 from src.config import C6_OPTIONS, C6_PLATE, C6_VEHICLE_VALUE
@@ -566,79 +566,20 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
 
         campo.input(telefone, clear=True)
 
-        # === REMOVER DADOS ANTIGOS (Evita Stale e "Ignorar Resultados") ===
-        tab.run_js('if(document.getElementById("copiar_dados")) document.getElementById("copiar_dados").value = "";')
-        tab.run_js('document.querySelectorAll("table").forEach(t => t.remove());')
-        tab.run_js('document.querySelectorAll(".list-group-item").forEach(t => t.remove());')
-
-        # [!] Limpar qualquer aviso de erro visual da busca anterior com seguranca (apenas elementos folha ou alertas reais, sem quebrar o layout)
-        tab.run_js("""
-            document.querySelectorAll('.alert, .badge, .text-danger, span, p, div.alert-danger').forEach(el => {
-                if (el.children.length === 0 || el.classList.contains('alert') || el.classList.contains('text-danger')) {
-                    let txt = (el.textContent || '').toLowerCase();
-                    if (txt.includes('não foi possível') || txt.includes('nao foi possivel') || txt.includes('nenhum registro') || txt.includes('não encontrado')) {
-                        el.remove();
-                    }
-                }
-            });
-        """)
+        _limpar_resultado_mind7(tab)
 
         # Uma submissão por consulta; a quota compartilhada controla o ritmo.
         botao = tab.ele("#botao-consultar", timeout=3)
         if botao:
             _verificar_bloqueio_mind7(tab)
-            enviar_consulta_mind7(tab, botao)
+            texto_copiar = enviar_consulta_mind7(tab, botao, timeout=180)
         else:
             _verificar_bloqueio_mind7(tab)
             raise Mind7Unavailable("Botão de consulta Mind7 indisponível")
 
-        # === ESPERAR RESULTADO (NOVA TABELA OU MSG DE ERRO) ===
-        candidatos = []
-        achou_resultado = False
-        texto_copiar = ""
-
-        # Scroll para garantir que elements do lazy-load disparem
-        tab.scroll.to_bottom()
-
-        # Aumentamos significativamente o tempo de espera devido a lentidao severa do Mind7
-        # Espera ate 360 iteracoes de 0.5s = 180 segundos (3 minutos)
-        limite_espera = 360
-        for seg_idx in range(limite_espera):
-            if seg_idx > 0 and seg_idx % 20 == 0:
-                print(f"    [!] Mind7: Ainda carregando... Aguardando resultado (decorridos {seg_idx * 0.5:.0f}s)...")
-
-            _verificar_bloqueio_mind7(tab)
-            html_lower = normalizar_texto(tab.html)
-
-            if "não foi possível encontrar" in html_lower or "nao foi possivel encontrar" in html_lower:
-                print("    Mind7: numero nao encontrado")
-                # Pausa após resposta negativa.
-                time.sleep(2.0)
-                # Sair do loop de retry tambem, nao so do loop de espera
-                return None
-
-            copiar_area = tab.ele("#copiar_dados", timeout=0)
-            if copiar_area:
-                texto = copiar_area.value or ""
-                if "cpf:" in texto.lower() or "cnpj:" in texto.lower():
-                    # Pausa dinamica para garantir que todo o conteudo carregou por completo no textarea
-                    print("    [!] Mind7: Area de dados detectada, aguardando estabilizacao do conteudo...")
-                    texto_anterior = ""
-                    for _ in range(8):  # ate 8 segundos para estabilizar
-                        time.sleep(1.0)
-                        texto_atual = tab.ele("#copiar_dados", timeout=2).value or ""
-                        if texto_atual == texto_anterior and texto_atual != "":
-                            break
-                        texto_anterior = texto_atual
-
-                    texto_copiar = texto_anterior if texto_anterior else texto
-                    achou_resultado = True
-                    break
-
-            time.sleep(0.5)
-
-        if not achou_resultado:
-            raise Mind7Unavailable("Mind7 não concluiu a consulta; confira antes de reenviar.")
+        if texto_copiar is None:
+            print("    Mind7: numero nao encontrado")
+            return None
 
         # Coletar TODOS os candidatos lendo o textarea escondido (pega as caixas de resultado + tabela)
         linhas_texto = texto_copiar.split("\n")

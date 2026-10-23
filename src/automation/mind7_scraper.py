@@ -20,6 +20,10 @@ class Mind7Unavailable(RuntimeError):
     """Sessão ou verificação do portal exige atenção antes de continuar."""
 
 
+class Mind7GhostClick(Mind7Unavailable):
+    """Não houve sinal observável de processamento após clicar; envio incerto."""
+
+
 def normalizar_nascimento(value: str) -> str:
     if isinstance(value, datetime):
         value = value.date()
@@ -150,10 +154,43 @@ def _verificar_bloqueio_mind7(tab, texto="", *, titulo=""):
         raise Mind7Unavailable("Mind7 aguarda validação do navegador; confira a aba antes de retomar.")
 
 
-def enviar_consulta_mind7(tab, botao, stop_event=None):
+def enviar_consulta_mind7(tab, botao, stop_event=None, timeout=30):
+    """Um clique; observa a resposta antes de liberar a próxima consulta.
+
+    Clique possivelmente ignorado: atualiza a aba, mas NUNCA reenvia sozinho.
+    """
     def send():
         _verificar_bloqueio_mind7(tab)
-        return botao.click()
+        listener = None
+        try:
+            candidate = getattr(tab, "listen", None)
+            if candidate is not None:
+                # Captura POSTs do navegador sem depender de um endpoint específico.
+                candidate.start(targets=True, method="POST")
+                listener = candidate
+        except Exception as exc:
+            log.warning("Monitor de rede indisponível; mantendo espera da interface: %s", exc)
+
+        try:
+            botao.click()
+            tab.scroll.to_bottom()
+            return _aguardar_resultado_mind7(
+                tab, timeout, listener=listener, stop_event=stop_event)
+        except Mind7GhostClick as exc:
+            _verificar_bloqueio_mind7(tab)
+            try:
+                tab.refresh()
+            except Exception as refresh_exc:
+                log.warning("Falha ao atualizar aba Mind7: %s", refresh_exc)
+            raise Mind7Unavailable(
+                "Clique sem resposta aparente: aba atualizada. "
+                "Envio incerto; confira o registro antes de nova tentativa.") from exc
+        finally:
+            if listener is not None:
+                try:
+                    listener.stop()
+                except Exception:
+                    log.warning("Não foi possível encerrar monitor de rede Mind7.")
     return reserve_mind7_request(stop_event=stop_event, send=send)
 
 
@@ -166,12 +203,17 @@ def _limpar_resultado_mind7(tab):
     ''')
 
 
-def _aguardar_resultado_mind7(tab, seconds: float) -> Optional[str]:
-    deadline = time.monotonic() + seconds
+def _aguardar_resultado_mind7(tab, seconds: float, *, listener=None,
+                              stop_event=None) -> Optional[str]:
+    inicio = time.monotonic()
+    deadline = inicio + seconds
     anterior = ""
-    estavel_desde = time.monotonic()
+    estavel_desde = inicio
+    viu_atividade = False
+    viu_post = False
+    monitor_funcional = listener is not None
     while time.monotonic() < deadline:
-        ensure_mind7_allowed()
+        ensure_mind7_allowed(stop_event)
         botao = tab.ele("#botao-consultar", timeout=0)
         copiar = tab.ele("#copiar_dados", timeout=0)
         texto = (copiar.value or "").strip() if copiar else ""
@@ -179,12 +221,21 @@ def _aguardar_resultado_mind7(tab, seconds: float) -> Optional[str]:
         visivel = (resultado.raw_text or "").lower() if resultado and resultado.states.is_displayed else ""
         _verificar_bloqueio_mind7(tab)
         _verificar_bloqueio_mind7(tab, visivel)
+        if monitor_funcional and not viu_post:
+            try:
+                viu_post = bool(listener.wait(timeout=0.01, raise_err=False))
+            except Exception:
+                # Erro de instrumentação não prova ausência de envio.
+                monitor_funcional = False
         sem_dados = any(msg in visivel for msg in (
             "não foi possível encontrar", "nao foi possivel encontrar", "nenhum registro encontrado",
         ))
-        # O portal reativa Consultar somente depois de inserir a resposta AJAX.
         dados = texto if re.search(r"\b(?:cpf|cnpj)\s*:", texto, re.I) else ""
-        pronto = botao and botao.states.is_enabled and (dados or sem_dados)
+        habilitado = bool(botao and botao.states.is_enabled)
+        if not habilitado or dados or sem_dados or viu_post:
+            viu_atividade = True
+        # Só aceitar dados estáveis, com o botão de consulta reativado.
+        pronto = habilitado and (dados or sem_dados)
         atual = dados if dados else visivel if sem_dados else ""
         if not pronto or atual != anterior:
             anterior = atual if pronto else ""
@@ -192,7 +243,11 @@ def _aguardar_resultado_mind7(tab, seconds: float) -> Optional[str]:
         elif time.monotonic() - estavel_desde >= 1.0:
             return dados or None
         time.sleep(0.25)
-    raise TimeoutError(f"Mind7 não concluiu a consulta em {seconds:g}s")
+    ensure_mind7_allowed(stop_event)
+    if not viu_atividade and (not monitor_funcional or not viu_post):
+        raise Mind7GhostClick(
+            "Nenhum indicador de loading, resultado ou POST concluído após o clique.")
+    raise TimeoutError(f"Mind7 não concluiu a consulta em {seconds:g}s; envio incerto")
 
 
 def extrair_numero_endereco(bloco_str: str) -> str:
@@ -388,12 +443,8 @@ def _consultar_mind7_celular_browser_com_recovery(page, phone: str, clean_name: 
             _verificar_bloqueio_mind7(tab)
             raise Mind7Unavailable("Botão de consulta do Mind7 indisponível")
         _verificar_bloqueio_mind7(tab)
-        enviar_consulta_mind7(tab, botao, stop_event)
-        log.info(f"[MIND7] Clicou no botão de consultar para {phone}. Aguardando resultado...")
-
-        tab.scroll.to_bottom()
-
-        texto_copiar = _aguardar_resultado_mind7(tab, 30)
+        texto_copiar = enviar_consulta_mind7(tab, botao, stop_event)
+        log.info(f"[MIND7] Consulta concluída para {phone}.")
         if texto_copiar is None:
             return None
 
@@ -468,9 +519,7 @@ def consultar_mind7_cpf(page, cpf: str, tab=None, stop_event=None) -> Optional[D
             _verificar_bloqueio_mind7(tab)
             raise Mind7Unavailable("Botão de consulta do Mind7 indisponível")
         _verificar_bloqueio_mind7(tab)
-        enviar_consulta_mind7(tab, botao, stop_event)
-
-        texto_copiar = _aguardar_resultado_mind7(tab, 25)
+        texto_copiar = enviar_consulta_mind7(tab, botao, stop_event, timeout=25)
         if texto_copiar is None:
             return None
 

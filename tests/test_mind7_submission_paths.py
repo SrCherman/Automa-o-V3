@@ -58,8 +58,8 @@ def test_browser_query_submits_once_without_enter(app_modules, monkeypatch, path
             return SimpleNamespace(raw_text="")
     tab.ele.side_effect = element
     monkeypatch.setattr(shared, "_garantir_login_mind7", lambda tab: True)
-    monkeypatch.setattr(shared, "_aguardar_resultado_mind7", lambda *args: None)
-    monkeypatch.setattr(browser, "_aguardar_resultado_mind7", lambda *args: None)
+    waiting = Mock(return_value=None)
+    monkeypatch.setattr(shared, "_aguardar_resultado_mind7", waiting)
     monkeypatch.setattr(shared.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(legacy, "pegar_aba", lambda *args: tab)
     monkeypatch.setattr(browser, "obter_aba_existente", lambda *args: tab)
@@ -74,7 +74,55 @@ def test_browser_query_submits_once_without_enter(app_modules, monkeypatch, path
         browser.consultar_mind7(Mock(), document, "Pessoa")
     field.input.assert_called_once_with(document, clear=True)
     button.click.assert_called_once_with()
+    waiting.assert_called_once_with(tab, {"phone": 30, "cpf": 25, "legacy": 180, "app": 25}[path],
+                                    listener=tab.listen, stop_event=None)
+    tab.listen.start.assert_called_once_with(targets=True, method="POST")
+    tab.listen.stop.assert_called_once_with()
     tab.refresh.assert_not_called()
+
+
+def test_browser_guard_contains_send_and_full_result_wait(monkeypatch):
+    tab, button = Mock(), Mock()
+    result = "CPF: 12345678901\nNOME: PESSOA TESTE"
+    events = []
+    button.click.side_effect = lambda: events.append("click")
+    tab.scroll.to_bottom.side_effect = lambda: events.append("scroll")
+    def wait(*args, **kwargs):
+        assert events == ["guard_start", "click", "scroll"]
+        assert kwargs["listener"] is tab.listen
+        assert kwargs["stop_event"] is None
+        events.append("loaded")
+        return result
+    def guard(*, stop_event, send):
+        events.append("guard_start")
+        response = send()
+        assert events[-1] == "loaded"
+        events.append("guard_finished")
+        return response
+    monkeypatch.setattr(shared, "reserve_mind7_request", guard)
+    monkeypatch.setattr(shared, "_verificar_bloqueio_mind7", lambda tab: None)
+    monkeypatch.setattr(shared, "_aguardar_resultado_mind7", wait)
+    assert shared.enviar_consulta_mind7(tab, button) == result
+    assert events == ["guard_start", "click", "scroll", "loaded", "guard_finished"]
+
+
+@pytest.mark.parametrize("error,refresh", [
+    (shared.Mind7GhostClick("nenhum sinal"), True),
+    (TimeoutError("resposta lenta/incerta"), False),
+])
+def test_ghost_click_refreshes_page_but_never_resubmits(monkeypatch, error, refresh):
+    tab, button = Mock(), Mock()
+    monkeypatch.setattr(shared, "reserve_mind7_request", lambda **kwargs: kwargs["send"]())
+    monkeypatch.setattr(shared, "_verificar_bloqueio_mind7", lambda _: None)
+    monkeypatch.setattr(shared, "_aguardar_resultado_mind7", Mock(side_effect=error))
+    with pytest.raises(shared.Mind7Unavailable if refresh else TimeoutError):
+        shared.enviar_consulta_mind7(tab, button)
+    button.click.assert_called_once_with()
+    if refresh:
+        tab.refresh.assert_called_once_with()
+    else:
+        tab.refresh.assert_not_called()
+    tab.listen.stop.assert_called_once_with()
 
 
 @pytest.mark.parametrize("status,text", [(403, "Forbidden"), (429, "Too many requests"),

@@ -236,7 +236,8 @@ class CampaignWorkerSession:
                 else:
                     self._simular_c6_single(contact_id, page)
                 ws_manager.broadcast_sync({"type": "progress_update", "campaign_id": self.campaign_id})
-                self._stop.wait(1)
+                if not is_mind7:
+                    self._stop.wait(1)
         except (Mind7AccessBlocked, Mind7QueryCancelled) as exc:
             self.stage_errors[stage] = str(exc)[:300]
             self.stop()

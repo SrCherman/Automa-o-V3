@@ -36,15 +36,15 @@ class ResultTab:
                                    states=SimpleNamespace(is_displayed=self.visible))
 
 
-def test_script_message_without_visible_response_times_out(clock):
+def test_silent_button_click_is_a_possible_ghost(clock):
     tab = ResultTab(clock, lambda _: "")
-    with pytest.raises(TimeoutError):
+    with pytest.raises(mind7.Mind7GhostClick):
         mind7._aguardar_resultado_mind7(tab, 3)
 
 
-def test_hidden_no_data_template_does_not_end_query(clock):
+def test_hidden_no_data_template_is_not_counted_as_a_response(clock):
     tab = ResultTab(clock, lambda _: "", visible=False, message="Nenhum registro encontrado")
-    with pytest.raises(TimeoutError):
+    with pytest.raises(mind7.Mind7GhostClick):
         mind7._aguardar_resultado_mind7(tab, 3)
 
 
@@ -76,6 +76,23 @@ def test_completed_record_without_birth_date_does_not_need_timeout(clock):
     tab = ResultTab(clock, lambda _: text)
     assert mind7._aguardar_resultado_mind7(tab, 25) == text
     assert clock.now == 1
+
+
+def test_completed_post_without_visible_data_is_uncertain_not_ghost(clock):
+    tab = ResultTab(clock, lambda _: "")
+    listener = SimpleNamespace(wait=lambda **kwargs: object())
+    with pytest.raises(TimeoutError):
+        mind7._aguardar_resultado_mind7(tab, 3, listener=listener)
+
+
+def test_stop_event_cancels_while_waiting_for_loading(clock):
+    from src.automation.mind7_rate_limit import Mind7QueryCancelled
+
+    tab = ResultTab(clock, lambda _: "", busy_until=10)
+    stop = SimpleNamespace(is_set=lambda: clock.now >= 1)
+    with pytest.raises(Mind7QueryCancelled):
+        mind7._aguardar_resultado_mind7(tab, 20, stop_event=stop)
+    assert clock.now >= 1
 
 
 def test_network_error_reenabling_button_is_not_no_data(clock):

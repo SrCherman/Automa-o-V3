@@ -1,7 +1,7 @@
-"""Quota de consultas Mind7: compartilhada entre etapas, processos e reinícios.
+"""Coordenador de consultas Mind7: uma solicitação por vez entre todos os processos.
 
-Aplica um teto conservador (20 consultas/5min) e intervalo mínimo (15 s).
-Não contorna bloqueios: a presença do aviso interrompe novas submissões.
+Aguarda a resposta e aplica pausas de 1, 2, 1 e 3 s em ciclo persistente.
+Bloqueios do portal interrompem novas consultas; sem evasão ou reenvios incertos.
 """
 from pathlib import Path
 from contextlib import closing
@@ -11,9 +11,8 @@ import time
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 BLOCK_FILE = DATA_DIR / "mind7_access_blocked.txt"
 LEDGER_FILE = DATA_DIR / "mind7_query_quota.sqlite"
-WINDOW_SECONDS = 300.0
-MAX_PER_WINDOW = 20
-MIN_INTERVAL_SECONDS = 15.0
+REQUEST_RETENTION_SECONDS = 86400.0  # Histórico local para diagnóstico, sem quota fixa.
+PAUSE_CYCLE_SECONDS = (1.0, 2.0, 1.0, 3.0)
 
 
 class Mind7AccessBlocked(RuntimeError):
@@ -59,15 +58,17 @@ def reserve_mind7_request(stop_event=None, *, ledger_file=None, block_file=None,
                     sleep_fn(0.25)
                 continue
             conn.execute("CREATE TABLE IF NOT EXISTS requests (sent_at REAL NOT NULL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS cadence ("
+                         "id INTEGER PRIMARY KEY CHECK (id = 1), "
+                         "next_index INTEGER NOT NULL, ready_at REAL NOT NULL)")
             now = now_fn()
-            conn.execute("DELETE FROM requests WHERE sent_at <= ?", (now - WINDOW_SECONDS,))
-            previous = [r[0] for r in conn.execute(
-                "SELECT sent_at FROM requests ORDER BY sent_at").fetchall()]
-            next_time = now
-            if previous:
-                next_time = max(next_time, previous[-1] + MIN_INTERVAL_SECONDS)
-            if len(previous) >= MAX_PER_WINDOW:
-                next_time = max(next_time, previous[-MAX_PER_WINDOW] + WINDOW_SECONDS)
+            conn.execute("DELETE FROM requests WHERE sent_at <= ?",
+                         (now - REQUEST_RETENTION_SECONDS,))
+            latest = conn.execute("SELECT MAX(sent_at) FROM requests").fetchone()[0]
+            cadence = conn.execute("SELECT next_index, ready_at FROM cadence WHERE id = 1").fetchone()
+            next_index, ready_at = cadence or (
+                0, latest + PAUSE_CYCLE_SECONDS[0] if latest is not None else 0)
+            next_time = max(now, ready_at)
             if next_time <= now:
                 # Verificar novamente dentro da transação, inclusive após aguardar o lock.
                 if blocked.exists():
@@ -86,7 +87,12 @@ def reserve_mind7_request(stop_event=None, *, ledger_file=None, block_file=None,
                 try:
                     return send() if send is not None else None
                 finally:
-                    conn.execute("INSERT INTO requests (sent_at) VALUES (?)", (now_fn(),))
+                    completed_at = now_fn()
+                    conn.execute("INSERT INTO requests (sent_at) VALUES (?)", (completed_at,))
+                    conn.execute("INSERT OR REPLACE INTO cadence (id, next_index, ready_at) "
+                                 "VALUES (1, ?, ?)", (
+                                     (next_index + 1) % len(PAUSE_CYCLE_SECONDS),
+                                     completed_at + PAUSE_CYCLE_SECONDS[next_index]))
                     conn.execute("COMMIT")
                     inflight.unlink()
             conn.execute("COMMIT")
