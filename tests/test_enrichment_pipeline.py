@@ -24,6 +24,7 @@ def database(tmp_path, monkeypatch):
     connection.Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(flow, "SessionLocal", factory)
+    monkeypatch.setattr(flow, "MIND7_ACCESS_BLOCK_FILE", tmp_path / "no-block-marker")
     with factory() as db:
         db.add(Campaign(id=1, name="Teste"))
         db.commit()
@@ -45,6 +46,44 @@ def worker():
     w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00")
     w.is_armed = True
     return w
+
+
+@pytest.mark.parametrize("stage", ["MIND7", "ENRIQUECIMENTO"])
+@pytest.mark.parametrize("error", [flow.Mind7AccessBlocked, flow.Mind7QueryCancelled, TimeoutError])
+def test_mind7_suspension_preserves_pending_and_attempts(database, monkeypatch, stage, error):
+    with database() as db:
+        cid = contact(db, cpf=None if stage == "MIND7" else "12345678901",
+                      credline_status="PENDENTE" if stage == "MIND7" else "CPF COLETADO")
+    w = worker()
+    lookup = Mock(side_effect=error("Consulta suspensa"))
+    monkeypatch.setattr(flow, "consultar_mind7_celular" if stage == "MIND7" else "consultar_mind7_cpf", lookup)
+    with pytest.raises(error):
+        if stage == "MIND7":
+            w._coletar_cpf_mind7_single(cid, Mock())
+        else:
+            w._enriquecer_contato_single(cid, Mock())
+    with database() as db:
+        c = db.get(Contact, cid)
+        if stage == "MIND7":
+            assert (c.credline_status, c.mind7_attempts) == ("PENDENTE", 0)
+        else:
+            assert (c.enrichment_status, c.enrichment_attempts) == ("PENDENTE", 0)
+    lookup.assert_called_once()
+
+
+def test_persistent_block_stops_start_and_worker_before_browser(database, monkeypatch):
+    flow.MIND7_ACCESS_BLOCK_FILE.write_text("Bloqueio original", encoding="utf-8")
+    browser = Mock()
+    monkeypatch.setattr(flow, "get_campaign_browser_page", browser)
+    orchestrator = flow.MultiCampaignOrchestrator()
+    assert orchestrator.start_campaign(1, etapa_inicial="MIND7")["status"] == "blocked"
+    assert orchestrator.get_state()["mind7_access_blocked"] is True
+    assert orchestrator.active_sessions == {}
+    w = worker()
+    w._run_stage("MIND7")
+    assert w._stop.is_set() and not w.is_armed
+    assert "MIND7" in w.stage_errors
+    browser.assert_not_called()
 
 
 def test_extraction_preserves_birth_date_and_cpf():
@@ -106,7 +145,7 @@ def test_enrichment_required_for_rejected_and_idempotent(database, monkeypatch):
         assert c.enrichment_status == "CONCLUIDO"
         assert c.birth_date == "1990-01-01"
         assert w._next_contact(db, "C6").id == cid
-    lookup.assert_called_once_with(lookup.call_args.args[0], "12345678901", tab="cpf-tab")
+    lookup.assert_called_once_with(lookup.call_args.args[0], "12345678901", tab="cpf-tab", stop_event=w._stop)
 
 
 def test_same_cpf_reuses_completed_lookup(database, monkeypatch):
@@ -152,7 +191,7 @@ def test_missing_birth_date_is_retried_before_c6(database, monkeypatch):
 def test_enrichment_transient_errors_are_bounded(database, monkeypatch):
     with database() as db:
         cid = contact(db)
-    lookup = Mock(side_effect=TimeoutError("timeout"))
+    lookup = Mock(side_effect=ValueError("Resposta inválida"))
     monkeypatch.setattr(flow, "consultar_mind7_cpf", lookup)
     w = worker()
     for _ in range(3):
@@ -199,7 +238,6 @@ def test_cpf_lookup_recovers_when_mind7_opens_dashboard(monkeypatch):
             pass
 
     tab = Tab()
-    monkeypatch.setattr(mind7, "check_and_solve_cloudflare", lambda _: True)
     monkeypatch.setattr(mind7, "_garantir_login_mind7", lambda _: True)
     monkeypatch.setattr(mind7.time, "sleep", lambda _: None)
     result = mind7.consultar_mind7_cpf(Mock(), "12345678901", tab=tab)
@@ -277,10 +315,10 @@ def test_parallel_stages_keep_fixed_tabs_and_process_new_cpf(database, monkeypat
     page.get_tabs.return_value = tabs
     monkeypatch.setattr(flow, "get_campaign_browser_page", lambda *args: page)
     received = []
-    def phone(*args, tab=None):
+    def phone(*args, tab=None, stop_event=None):
         received.append(("phone", tab))
         return {"cpf": "12345678901", "nome": "Pessoa de Teste"}
-    def details(*args, tab=None):
+    def details(*args, tab=None, stop_event=None):
         received.append(("cpf", tab))
         return {"birth_date": "1990-01-01"}
     monkeypatch.setattr(flow, "consultar_mind7_celular", phone)

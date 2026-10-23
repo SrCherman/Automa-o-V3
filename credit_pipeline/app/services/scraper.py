@@ -3,8 +3,13 @@ Módulo responsável pelas operações de Web Scraping usando DrissionPage (Cone
 """
 
 import os
+import sys
 import time
 import re
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from src.automation.mind7_rate_limit import Mind7AccessBlocked, ensure_mind7_allowed
+from src.automation.mind7_scraper import _verificar_bloqueio_mind7, _aguardar_resultado_mind7, _limpar_resultado_mind7, Mind7Unavailable, enviar_consulta_mind7
 from datetime import date, datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 from typing import Dict, Any, Optional
@@ -145,8 +150,10 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
     """
     Usa a aba já aberta do Mind7 para buscar os dados.
     """
+    ensure_mind7_allowed()
     url_busca = "https://mind-7.org/painel/consultas/celular/"
     tab = obter_aba_existente(page, "mind", url_busca)
+    _verificar_bloqueio_mind7(tab)
     
     try:
         print(f"Acessando Mind7 na aba: {tab.url}")
@@ -157,42 +164,25 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
             tab.wait.load_start()
         
         print(f"Buscando telefone: {telefone}")
+        _verificar_bloqueio_mind7(tab)
         busca_input = tab.ele('#documento', timeout=10)
+        if not busca_input:
+            raise Mind7Unavailable("Formulário de telefone Mind7 indisponível")
+        _limpar_resultado_mind7(tab)
         
-        # Digita o telefone limpando o campo antes, e aperta a tecla ENTER (muito mais garantido em muitos sistemas)
-        busca_input.input(telefone + '\n', clear=True)
-        
-        # Como redundância, força o clique no botão usando JavaScript
+        # Um único envio evita duas consultas para o mesmo telefone.
+        busca_input.input(telefone, clear=True)
         botao = tab.ele('#botao-consultar', timeout=5)
-        if botao:
-            botao.click(by_js=True)
+        if not botao:
+            _verificar_bloqueio_mind7(tab)
+            raise Mind7Unavailable("Botão de consulta Mind7 indisponível")
+        enviar_consulta_mind7(tab, botao)
             
         # Força rolagem da página para baixo (para ativar lazy load se existir)
         tab.scroll.to_bottom()
         
-        # Aguardar resultado com tempo estendido (até 25 segundos)
-        print("Aguardando carregamento da consulta (pode demorar até 25s)...")
-        
-        achou_resultado = False
-        texto_copiar = ""
-        
-        for _ in range(50):  # até 25 segundos
-            html_lower = tab.html.lower()
-            if "não foi possível encontrar" in html_lower or "nao foi possivel encontrar" in html_lower:
-                print("    Mind7: numero nao encontrado")
-                return None
-                
-            copiar_area = tab.ele("#copiar_dados", timeout=0)
-            if copiar_area:
-                texto = copiar_area.value or ""
-                if "cpf:" in texto.lower() or "cnpj:" in texto.lower():
-                    texto_copiar = texto
-                    achou_resultado = True
-                    break
-            time.sleep(0.5)
-            
-        if not achou_resultado:
-            print("Tempo esgotado ou dados não encontrados no Mind7.")
+        texto_copiar = _aguardar_resultado_mind7(tab, 25)
+        if texto_copiar is None:
             return None
 
         import re
@@ -322,9 +312,11 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
 
         return None
 
+    except (Mind7AccessBlocked, Mind7Unavailable, TimeoutError):
+        raise
     except Exception as e:
         print(f"Erro na consulta Mind7: {e}")
-        return None
+        raise Mind7Unavailable("Falha na consulta Mind7; confira antes de reenviar.") from e
 
 def _marcar_veiculo_usado(tab) -> bool:
     """

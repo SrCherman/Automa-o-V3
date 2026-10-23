@@ -20,6 +20,8 @@ from src.automation.c6_scraper import consultar_c6_cpf, C6Unavailable
 from src.automation.credline_scraper import consultar_credline_cpf, _pegar_aba
 from src.config import MIND7_URL, MIND7_CPF_URL, CREDLINE_URL, C6_URL, C6_PLATE, C6_VEHICLE_VALUE, C6_OPTIONS
 
+from src.automation.mind7_rate_limit import BLOCK_FILE as MIND7_ACCESS_BLOCK_FILE, Mind7AccessBlocked, Mind7QueryCancelled
+
 log = logging.getLogger("orchestrator")
 c6_log = logging.getLogger("orchestrator.c6")
 if not c6_log.handlers:
@@ -174,6 +176,8 @@ class CampaignWorkerSession:
         page = mind7_page if is_mind7 else None
         tab = None
         try:
+            if is_mind7 and MIND7_ACCESS_BLOCK_FILE.exists():
+                raise Mind7AccessBlocked("Mind7 bloqueado; etapa suspensa antes de abrir o navegador.")
             # Abra o Mind7 ao iniciar a etapa, mesmo sem contatos elegíveis.
             # Coleta por celular e enriquecimento por CPF têm abas distintas
             # e compartilham o mesmo perfil autenticado da campanha.
@@ -233,6 +237,9 @@ class CampaignWorkerSession:
                     self._simular_c6_single(contact_id, page)
                 ws_manager.broadcast_sync({"type": "progress_update", "campaign_id": self.campaign_id})
                 self._stop.wait(1)
+        except (Mind7AccessBlocked, Mind7QueryCancelled) as exc:
+            self.stage_errors[stage] = str(exc)[:300]
+            self.stop()
         except Exception as exc:
             self.stage_errors[stage] = str(exc)[:300]
             log.exception("Etapa %s pausada na campanha %s; dados pendentes preservados", stage, self.campaign_id)
@@ -248,7 +255,7 @@ class CampaignWorkerSession:
             c.mind7_attempts = (c.mind7_attempts or 0) + 1
             db.commit()
             try:
-                result = consultar_mind7_celular(page, c.phone, c.clean_name, tab=tab)
+                result = consultar_mind7_celular(page, c.phone, c.clean_name, tab=tab, stop_event=self._stop)
                 if result:
                     c.cpf, c.mind7_name = result["cpf"], result["nome"]
                     c.credline_status = "CPF COLETADO"
@@ -263,7 +270,7 @@ class CampaignWorkerSession:
                 c.credline_status = "PENDENTE" if c.mind7_attempts < 3 else "ERRO"
                 c.observation = str(exc)[:200]
                 db.commit()
-                if isinstance(exc, Mind7Unavailable):
+                if isinstance(exc, (Mind7Unavailable, Mind7AccessBlocked, Mind7QueryCancelled, TimeoutError)):
                     c.mind7_attempts -= 1
                     c.credline_status = "PENDENTE"
                     db.commit()
@@ -300,7 +307,7 @@ class CampaignWorkerSession:
                                                Contact.enrichment_status == "PROCESSANDO",
                                                Contact.enrichment_attempts == attempts)
             try:
-                result = cached if cached is not None else consultar_mind7_cpf(page, cpf, tab=tab)
+                result = cached if cached is not None else consultar_mind7_cpf(page, cpf, tab=tab, stop_event=self._stop)
                 if result:
                     for key in ("mind7_name", "birth_date", "cep", "house_number"):
                         if result.get(key):
@@ -311,13 +318,13 @@ class CampaignWorkerSession:
                 values["enriched_at"] = datetime.now(timezone.utc)
                 current.update(values, synchronize_session=False)
             except Exception as exc:
-                values = {"enrichment_status": "PENDENTE" if isinstance(exc, Mind7Unavailable) else "ERRO",
+                values = {"enrichment_status": "PENDENTE" if isinstance(exc, (Mind7Unavailable, Mind7AccessBlocked, Mind7QueryCancelled, TimeoutError)) else "ERRO",
                           "enrichment_observation": str(exc)[:200]}
-                if isinstance(exc, Mind7Unavailable):
+                if isinstance(exc, (Mind7Unavailable, Mind7AccessBlocked, Mind7QueryCancelled, TimeoutError)):
                     values["enrichment_attempts"] = attempts - 1
                 current.update(values, synchronize_session=False)
                 db.commit()
-                if isinstance(exc, Mind7Unavailable):
+                if isinstance(exc, (Mind7Unavailable, Mind7AccessBlocked, Mind7QueryCancelled, TimeoutError)):
                     raise
                 return
             db.commit()
@@ -440,6 +447,7 @@ class MultiCampaignOrchestrator:
 
             return {
                 "is_running": len(running_list) > 0,
+                "mind7_access_blocked": MIND7_ACCESS_BLOCK_FILE.exists(),
                 "running_campaigns_count": len(running_list),
                 "running_campaigns": running_list,
                 "paused_campaigns": paused_list,
@@ -451,6 +459,16 @@ class MultiCampaignOrchestrator:
     def start_campaign(self, campaign_id: int, placa: str = "IWD0H56", valor: str = "120.000,00", etapa_inicial: str = "AUTO") -> dict:
         if etapa_inicial.upper() not in CampaignWorkerSession.STAGES:
             return {"status": "error", "message": "Etapa desconhecida"}
+        # O portal bloqueou consultas automatizadas. Não rearmar nem iniciar
+        # workers de Mind7 até desbloqueio/autorização verificada pelo operador.
+        if MIND7_ACCESS_BLOCK_FILE.exists():
+            return {
+                "status": "blocked",
+                "message": (
+                    "Mind7 bloqueou o acesso após identificar automação (115 consultas/5 min). "
+                    "Consultas suspensas. Solicite revisão/desbloqueio ao Mind7 antes de retomar."
+                ),
+            }
         with self._lock:
             existing = self.active_sessions.get(campaign_id)
             if existing and existing.is_running:

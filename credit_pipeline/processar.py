@@ -13,7 +13,8 @@ import os, re, time, unicodedata, random
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.automation.mind7_scraper import consultar_mind7_cpf as consulta_cpf_compartilhada, normalizar_nascimento, Mind7Unavailable
+from src.automation.mind7_scraper import consultar_mind7_cpf as consulta_cpf_compartilhada, normalizar_nascimento, Mind7Unavailable, _verificar_bloqueio_mind7, enviar_consulta_mind7
+from src.automation.mind7_rate_limit import Mind7AccessBlocked, ensure_mind7_allowed
 from src.automation.c6_scraper import consultar_c6_cpf, C6Unavailable
 from src.config import C6_OPTIONS, C6_PLATE, C6_VEHICLE_VALUE
 from datetime import datetime
@@ -545,7 +546,9 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
     Busca telefone no Mind7.
     Retorna {"cpf": "...", "nome": "..."} se nome bater, senao None.
     """
+    ensure_mind7_allowed()
     tab = pegar_aba(page, "mind", MIND7_URL)
+    _verificar_bloqueio_mind7(tab)
 
     try:
         # Garantir que estamos na pagina certa (sem recarregar se ja estiver)
@@ -553,124 +556,95 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
             tab.get(MIND7_SEARCH_URL)
             time.sleep(2)
 
-        # Laco de tentativa para lidar com os "bugs" do Mind7
-        for tentativa in range(2):
-            # Limpar campo e digitar novo telefone
-            campo = tab.ele("#documento", timeout=5)
-            if not campo:
-                print("    [!] campo #documento nao encontrado")
-                return None
+        # Limpar campo e digitar novo telefone
+        campo = tab.ele("#documento", timeout=5)
+        if not campo:
+            _verificar_bloqueio_mind7(tab)
+            raise Mind7Unavailable("Formulário de telefone Mind7 indisponível")
 
-            # [!] Humanizacao: Pausa antes de preencher
-            time.sleep(random.uniform(1.0, 2.5))
-            
-            campo.input(telefone, clear=True)
+        _verificar_bloqueio_mind7(tab)
 
-            # === REMOVER DADOS ANTIGOS (Evita Stale e "Ignorar Resultados") ===
-            tab.run_js('if(document.getElementById("copiar_dados")) document.getElementById("copiar_dados").value = "";')
-            tab.run_js('document.querySelectorAll("table").forEach(t => t.remove());')
-            tab.run_js('document.querySelectorAll(".list-group-item").forEach(t => t.remove());')
-            
-            # [!] Limpar qualquer aviso de erro visual da busca anterior com seguranca (apenas elementos folha ou alertas reais, sem quebrar o layout)
-            tab.run_js("""
-                document.querySelectorAll('.alert, .badge, .text-danger, span, p, div.alert-danger').forEach(el => {
-                    if (el.children.length === 0 || el.classList.contains('alert') || el.classList.contains('text-danger')) {
-                        let txt = (el.textContent || '').toLowerCase();
-                        if (txt.includes('não foi possível') || txt.includes('nao foi possivel') || txt.includes('nenhum registro') || txt.includes('não encontrado')) {
-                            el.remove();
-                        }
+        campo.input(telefone, clear=True)
+
+        # === REMOVER DADOS ANTIGOS (Evita Stale e "Ignorar Resultados") ===
+        tab.run_js('if(document.getElementById("copiar_dados")) document.getElementById("copiar_dados").value = "";')
+        tab.run_js('document.querySelectorAll("table").forEach(t => t.remove());')
+        tab.run_js('document.querySelectorAll(".list-group-item").forEach(t => t.remove());')
+
+        # [!] Limpar qualquer aviso de erro visual da busca anterior com seguranca (apenas elementos folha ou alertas reais, sem quebrar o layout)
+        tab.run_js("""
+            document.querySelectorAll('.alert, .badge, .text-danger, span, p, div.alert-danger').forEach(el => {
+                if (el.children.length === 0 || el.classList.contains('alert') || el.classList.contains('text-danger')) {
+                    let txt = (el.textContent || '').toLowerCase();
+                    if (txt.includes('não foi possível') || txt.includes('nao foi possivel') || txt.includes('nenhum registro') || txt.includes('não encontrado')) {
+                        el.remove();
                     }
-                });
-            """)
+                }
+            });
+        """)
 
-            # [!] Humanizacao: Pausa simulando a movimentacao do mouse ate o botao
-            time.sleep(random.uniform(0.8, 2.0))
+        # Uma submissão por consulta; a quota compartilhada controla o ritmo.
+        botao = tab.ele("#botao-consultar", timeout=3)
+        if botao:
+            _verificar_bloqueio_mind7(tab)
+            enviar_consulta_mind7(tab, botao)
+        else:
+            _verificar_bloqueio_mind7(tab)
+            raise Mind7Unavailable("Botão de consulta Mind7 indisponível")
 
-            # Clicar no botao de consultar (sem by_js para ser mais humano)
-            botao = tab.ele("#botao-consultar", timeout=3)
-            if botao:
-                botao.click()
+        # === ESPERAR RESULTADO (NOVA TABELA OU MSG DE ERRO) ===
+        candidatos = []
+        achou_resultado = False
+        texto_copiar = ""
 
-            # [!] Tratamento de bug do portal Mind7 (quando o clique é aceito mas nada acontece / botão continua ativo sem carregar)
-            time.sleep(1.2)
-            botao_atual = tab.ele("#botao-consultar", timeout=1)
-            if botao_atual:
-                texto_botao = (botao_atual.text or "").lower()
-                esta_ativo = not botao_atual.attr("disabled")
-                
-                # O bug só ocorre se o botão continuar ativo E NÃO contiver "carregando" ou "aguarde" (ou seja, nada aconteceu)
-                if esta_ativo and "carregando" not in texto_botao and "aguarde" not in texto_botao:
-                    html_agora = normalizar_texto(tab.html)
-                    copiar_dados_existe = tab.ele("#copiar_dados", timeout=0)
-                    
-                    # Se não há dados na tela e nem aviso de erro, de fato nada aconteceu
-                    if not copiar_dados_existe and "não foi possível" not in html_agora and "nao foi possivel" not in html_agora:
-                        print("    [!] Mind7 BUG: Nada aconteceu após o clique! O botão permaneceu ativo e inalterado.")
-                        print("        Efetuando refresh na página e pulando para o próximo número da lista...")
-                        tab.refresh()
-                        time.sleep(5)
-                        return None
+        # Scroll para garantir que elements do lazy-load disparem
+        tab.scroll.to_bottom()
 
-            # === ESPERAR RESULTADO (NOVA TABELA OU MSG DE ERRO) ===
-            candidatos = []
-            achou_resultado = False
-            texto_copiar = ""
-            
-            # Scroll para garantir que elements do lazy-load disparem
-            tab.scroll.to_bottom()
-            
-            # Aumentamos significativamente o tempo de espera devido a lentidao severa do Mind7
-            # Espera ate 360 iteracoes de 0.5s = 180 segundos (3 minutos)
-            limite_espera = 360
-            for seg_idx in range(limite_espera):
-                if seg_idx > 0 and seg_idx % 20 == 0:
-                    print(f"    [!] Mind7: Ainda carregando... Aguardando resultado (decorridos {seg_idx * 0.5:.0f}s)...")
+        # Aumentamos significativamente o tempo de espera devido a lentidao severa do Mind7
+        # Espera ate 360 iteracoes de 0.5s = 180 segundos (3 minutos)
+        limite_espera = 360
+        for seg_idx in range(limite_espera):
+            if seg_idx > 0 and seg_idx % 20 == 0:
+                print(f"    [!] Mind7: Ainda carregando... Aguardando resultado (decorridos {seg_idx * 0.5:.0f}s)...")
 
-                html_lower = normalizar_texto(tab.html)
+            _verificar_bloqueio_mind7(tab)
+            html_lower = normalizar_texto(tab.html)
 
-                if "não foi possível encontrar" in html_lower or "nao foi possivel encontrar" in html_lower:
-                    print("    Mind7: numero nao encontrado")
-                    # Cooldown humano de 2 segundos apos resultado negativo para evitar loops freneticos
-                    time.sleep(2.0)
-                    # Sair do loop de retry tambem, nao so do loop de espera
-                    return None
-
-                copiar_area = tab.ele("#copiar_dados", timeout=0)
-                if copiar_area:
-                    texto = copiar_area.value or ""
-                    if "cpf:" in texto.lower() or "cnpj:" in texto.lower():
-                        # Pausa dinamica para garantir que todo o conteudo carregou por completo no textarea
-                        print("    [!] Mind7: Area de dados detectada, aguardando estabilizacao do conteudo...")
-                        texto_anterior = ""
-                        for _ in range(8):  # ate 8 segundos para estabilizar
-                            time.sleep(1.0)
-                            texto_atual = tab.ele("#copiar_dados", timeout=2).value or ""
-                            if texto_atual == texto_anterior and texto_atual != "":
-                                break
-                            texto_anterior = texto_atual
-                        
-                        texto_copiar = texto_anterior if texto_anterior else texto
-                        achou_resultado = True
-                        break
-                    
-                time.sleep(0.5)
-
-            if achou_resultado:
-                break
-                
-            if tentativa == 0:
-                print("    [!] Mind7 bugou ou esta lento (não carregou resultado). Dando refresh e aguardando 30s...")
-                tab.refresh()
-                time.sleep(30)
-            else:
-                print("    Mind7: timeout definitivo esperando resultado")
+            if "não foi possível encontrar" in html_lower or "nao foi possivel encontrar" in html_lower:
+                print("    Mind7: numero nao encontrado")
+                # Pausa após resposta negativa.
+                time.sleep(2.0)
+                # Sair do loop de retry tambem, nao so do loop de espera
                 return None
+
+            copiar_area = tab.ele("#copiar_dados", timeout=0)
+            if copiar_area:
+                texto = copiar_area.value or ""
+                if "cpf:" in texto.lower() or "cnpj:" in texto.lower():
+                    # Pausa dinamica para garantir que todo o conteudo carregou por completo no textarea
+                    print("    [!] Mind7: Area de dados detectada, aguardando estabilizacao do conteudo...")
+                    texto_anterior = ""
+                    for _ in range(8):  # ate 8 segundos para estabilizar
+                        time.sleep(1.0)
+                        texto_atual = tab.ele("#copiar_dados", timeout=2).value or ""
+                        if texto_atual == texto_anterior and texto_atual != "":
+                            break
+                        texto_anterior = texto_atual
+
+                    texto_copiar = texto_anterior if texto_anterior else texto
+                    achou_resultado = True
+                    break
+
+            time.sleep(0.5)
+
+        if not achou_resultado:
+            raise Mind7Unavailable("Mind7 não concluiu a consulta; confira antes de reenviar.")
 
         # Coletar TODOS os candidatos lendo o textarea escondido (pega as caixas de resultado + tabela)
         linhas_texto = texto_copiar.split("\n")
         cpfs_ja_vistos = set()  # Evita duplicatas
         candidatos = []
-        
+
         # Divide o texto_copiar em blocos de candidatos (cada bloco inicia com um padrão de CPF)
         blocos_txt = []
         bloco_atual = []
@@ -708,11 +682,11 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
                 cpf_match = re.search(r"CPF:\s*(\d{3}\.\d{3}\.\d{3}-\d{2})", bloco)
             if not cpf_match:
                 continue
-                
+
             cpf_limpo = re.sub(r"\D", "", cpf_match.group(1))
             if len(cpf_limpo) != 11 or len(set(cpf_limpo)) == 1:
                 continue
-                
+
             if "|" in bloco:
                 partes = [p.strip() for p in bloco.split("|")]
                 cpf_idx = -1
@@ -727,7 +701,7 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
             else:
                 nome_match = re.search(r"NOME:\s*(.*)", bloco, re.I)
                 nome_raw = nome_match.group(1).strip() if nome_match else "Desconhecido"
-            
+
             cep = ""
             cep_match = re.search(r"\b(\d{5}-\d{3})\b", bloco)
             if not cep_match:
@@ -739,15 +713,15 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
                         cep_match = None
             if cep_match:
                 cep = cep_match.group(1).replace("-", "")
-                
+
             nasc_match = re.search(
                 r"\b(?:data\s+de\s+)?nasc(?:imento|\.)?\s*:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})",
                 bloco, re.I,
             )
             birth_date = normalizar_nascimento(nasc_match.group(1)) if nasc_match else ""
-                    
+
             numero = extrair_numero_endereco(bloco)
-            
+
             if cpf_limpo not in cpfs_ja_vistos:
                 candidatos.append({
                     "nome": nome_raw,
@@ -770,20 +744,20 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
                             cpf_raw = p.replace("CPF:", "").strip()
                             if idx + 1 < len(partes):
                                 name_raw = partes[idx+1].strip()
-                    
+
                     cpf_limpo = re.sub(r"\D", "", cpf_raw)
                     if len(cpf_limpo) == 11 and len(set(cpf_limpo)) > 1 and name_raw:
                         cep = ""
                         cep_match = re.search(r"\b(\d{5}-?\d{3})\b", linha_txt)
                         if cep_match:
                             cep = cep_match.group(1).replace("-", "")
-                        
+
                         nasc_match = re.search(
                             r"\b(?:data\s+de\s+)?nasc(?:imento|\.)?\s*:\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})",
                             linha_txt, re.I,
                         )
                         birth_date = normalizar_nascimento(nasc_match.group(1)) if nasc_match else ""
-                            
+
                         numero = ""
                         digitos = re.findall(r"\b(\d{1,5})\b", linha_txt)
                         for d in digitos:
@@ -791,7 +765,7 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
                                 continue
                             numero = d
                             break
-                            
+
                         if cpf_limpo not in cpfs_ja_vistos:
                             candidatos.append({
                                 "nome": name_raw,
@@ -801,23 +775,6 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
                                 "birth_date": birth_date
                             })
                             cpfs_ja_vistos.add(cpf_limpo)
-
-        # [!] Tratamento de bug do portal Mind7 (quando o clique é aceito mas os dados permanecem identicos aos da consulta anterior)
-        if not hasattr(consultar_mind7, "ultimo_resultado_cpfs"):
-            consultar_mind7.ultimo_resultado_cpfs = set()
-            
-        cpfs_atuais = {cand["cpf"] for cand in candidatos}
-        if cpfs_atuais and cpfs_atuais == consultar_mind7.ultimo_resultado_cpfs:
-            print("    [!] Mind7 BUG: Os dados retornados são IDÊNTICOS aos da consulta anterior!")
-            print("        Isso significa que a plataforma aceitou o clique mas NÃO realizou uma nova busca.")
-            print("        Efetuando refresh na página e pulando para o próximo número da lista...")
-            tab.refresh()
-            time.sleep(5)
-            return None
-        
-        # Se os dados mudaram e são válidos, salvamos o novo conjunto de CPFs de sucesso
-        if cpfs_atuais:
-            consultar_mind7.ultimo_resultado_cpfs = cpfs_atuais
 
         if not candidatos:
             print("    Mind7: tabela sem dados uteis")
@@ -860,9 +817,11 @@ def consultar_mind7(page, telefone: str, nome_whats: str):
         print(f"    Mind7: nenhum dos {len(candidatos)} nomes bate com '{limpar(nome_whats)}'")
         return None
 
+    except (Mind7AccessBlocked, Mind7Unavailable, TimeoutError):
+        raise
     except Exception as e:
         print(f"    [!] Erro Mind7: {e}")
-        return None
+        raise Mind7Unavailable("Falha na consulta Mind7; confira antes de reenviar.") from e
 
 
 def consultar_mind7_cpf(page, cpf: str):
@@ -1235,6 +1194,9 @@ def etapa_mind7(wb, ws, page_m):
                 if birth_date and not ws.cell(row=row, column=_coluna(ws, "Data de Nascimento")).value:
                     ws.cell(row=row, column=_coluna(ws, "Data de Nascimento"), value=birth_date)
                 coletados += 1
+        except (Mind7AccessBlocked, Mind7Unavailable, TimeoutError):
+            _salvar(wb)
+            raise
         except Exception as e:
             print(f"    [!] Erro na coleta Mind7 para {nome}: {e}")
             ws.cell(row=row, column=6, value="SEM DADOS")
@@ -1704,7 +1666,7 @@ def etapa_enriquecimento(wb, ws, page_m):
             ws.cell(row, cols["Status Enriquecimento"], "CONCLUIDO" if ready else ("INCOMPLETO" if result else "SEM DADOS"))
             ws.cell(row, cols["Observacao Enriquecimento"], "Consulta por CPF concluída" if ready else "Nascimento não encontrado; confira antes do C6")
             ESTATISTICAS["enriquecimento"]["sucessos" if ready else "sem_dados"] += 1
-        except Mind7Unavailable as exc:
+        except (Mind7Unavailable, Mind7AccessBlocked, TimeoutError) as exc:
             ws.cell(row, cols["Tentativas Enriquecimento"], attempts)
             ws.cell(row, cols["Status Enriquecimento"], "PENDENTE")
             ws.cell(row, cols["Observacao Enriquecimento"], str(exc))

@@ -44,7 +44,7 @@ def test_enrichment_discards_return_for_previous_cpf(query_case, monkeypatch, fa
     factory, contact_id, worker = query_case
     change(factory, contact_id, enrichment_status="PENDENTE", birth_date=None)
 
-    def lookup(page, cpf, tab=None):
+    def lookup(page, cpf, tab=None, stop_event=None):
         assert cpf == "12345678901"
         change(factory, contact_id, cpf="98765432100", enrichment_status="PENDENTE", enrichment_attempts=0)
         if fails:
@@ -52,7 +52,11 @@ def test_enrichment_discards_return_for_previous_cpf(query_case, monkeypatch, fa
         return {"birth_date": "1990-01-01", "cep": "85800000"}
 
     monkeypatch.setattr(flow, "consultar_mind7_cpf", lookup)
-    worker._enriquecer_contato_single(contact_id, Mock())
+    if fails:
+        with pytest.raises(TimeoutError):
+            worker._enriquecer_contato_single(contact_id, Mock())
+    else:
+        worker._enriquecer_contato_single(contact_id, Mock())
     with factory() as db:
         contact = db.get(Contact, contact_id)
         assert contact.cpf == "98765432100"
@@ -141,7 +145,11 @@ def test_old_return_preserves_newer_attempt_or_completed_result(query_case, monk
 
     monkeypatch.setattr(flow, "consultar_mind7_cpf" if stage == "enrichment" else "consultar_c6_cpf", lookup)
     handler = worker._enriquecer_contato_single if stage == "enrichment" else worker._simular_c6_single
-    handler(contact_id, Mock())
+    if fails and stage == "enrichment":
+        with pytest.raises(TimeoutError):
+            handler(contact_id, Mock())
+    else:
+        handler(contact_id, Mock())
     with factory() as db:
         contact = db.get(Contact, contact_id)
         if stage == "enrichment":

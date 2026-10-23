@@ -9,7 +9,9 @@ from datetime import date, datetime
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 from src.config import MIND7_URL, MIND7_CPF_URL, MIND7_LOGIN_URL, MIND7_USER, MIND7_PASS
-from src.automation.cloudflare_solver import check_and_solve_cloudflare
+from src.automation.mind7_rate_limit import (
+    reserve_mind7_request, mark_mind7_blocked, Mind7AccessBlocked, ensure_mind7_allowed,
+)
 from src.ingestion.rules import calcular_score_nome, extrair_nome_real
 
 log = logging.getLogger("mind7_scraper")
@@ -113,6 +115,43 @@ def _pegar_aba(page, keyword: str, fallback_url: str):
     return page.new_tab(fallback_url)
 
 
+def _verificar_bloqueio_mind7(tab, texto=""):
+    """Reconhece bloqueios declarados pelo portal e interrompe novas consultas."""
+    if not texto:
+        try:
+            body = tab.ele("tag:body", timeout=0.3)
+            texto = (body.text or "") if body else ""
+        except Exception:
+            return
+    lower = texto.lower() if isinstance(texto, str) else ""
+    blocked = (
+        "bloqueio automático" in lower or "bloqueio automatico" in lower
+        or "limite de consultas" in lower or "acesso temporariamente bloqueado" in lower
+        or ("consultas em 5 min" in lower and "automação" in lower)
+    )
+    if blocked or any(message in lower for message in (
+        "too many requests", "rate limit exceeded", "access denied", "acesso negado",
+        "acesso bloqueado", "excesso de consultas", "conta suspensa",
+        "bloqueio por atividade", "bloqueio temporário", "bloqueio temporario",
+    )):
+        mark_mind7_blocked()
+        raise Mind7AccessBlocked("Mind7 informou bloqueio de consultas. Processamento suspenso.")
+    if any(message in lower for message in (
+        "verify you are human", "verifique se você é humano", "verifique se voce e humano",
+        "just a moment", "checking your browser",
+        "um momento", "executando verificação", "executando verificacao",
+    )):
+        mark_mind7_blocked("Portal exige validação manual")
+        raise Mind7AccessBlocked("Conclua a validação manual do portal antes de retomar.")
+
+
+def enviar_consulta_mind7(tab, botao, stop_event=None):
+    def send():
+        _verificar_bloqueio_mind7(tab)
+        return botao.click()
+    return reserve_mind7_request(stop_event=stop_event, send=send)
+
+
 def _limpar_resultado_mind7(tab):
     tab.run_js('''
         const resultado = document.getElementById("conteudo-retorno");
@@ -127,11 +166,14 @@ def _aguardar_resultado_mind7(tab, seconds: float) -> Optional[str]:
     anterior = ""
     estavel_desde = time.monotonic()
     while time.monotonic() < deadline:
+        ensure_mind7_allowed()
         botao = tab.ele("#botao-consultar", timeout=0)
         copiar = tab.ele("#copiar_dados", timeout=0)
         texto = (copiar.value or "").strip() if copiar else ""
         resultado = tab.ele("#conteudo-retorno", timeout=0)
         visivel = (resultado.raw_text or "").lower() if resultado and resultado.states.is_displayed else ""
+        _verificar_bloqueio_mind7(tab)
+        _verificar_bloqueio_mind7(tab, visivel)
         sem_dados = any(msg in visivel for msg in (
             "não foi possível encontrar", "nao foi possivel encontrar", "nenhum registro encontrado",
         ))
@@ -300,31 +342,37 @@ def _extrair_candidatos_mind7(texto: str) -> List[Dict[str, Any]]:
 
     return candidatos
 
-def consultar_mind7_celular(page, phone: str, clean_name: str, tab=None) -> Optional[Dict[str, Any]]:
+def consultar_mind7_celular(page, phone: str, clean_name: str, tab=None, stop_event=None) -> Optional[Dict[str, Any]]:
+    ensure_mind7_allowed(stop_event)
     tab = tab or _pegar_aba(page, "mind", MIND7_LOGIN_URL)
+    _verificar_bloqueio_mind7(tab)
     url_lower = tab.url.lower()
 
     if "acesso" in url_lower or "login" in url_lower:
         _garantir_login_mind7(tab)
         raise Mind7Unavailable("Faça o login no Mind7 e retome a etapa")
 
-    return _consultar_mind7_celular_browser_com_recovery(page, phone, clean_name, tab=tab)
+    return _consultar_mind7_celular_browser_com_recovery(page, phone, clean_name, tab=tab, stop_event=stop_event)
 
-def _consultar_mind7_celular_browser_com_recovery(page, phone: str, clean_name: str, tentativa: int = 1, tab=None) -> Optional[Dict[str, Any]]:
+def _consultar_mind7_celular_browser_com_recovery(page, phone: str, clean_name: str, tentativa: int = 1, tab=None, stop_event=None) -> Optional[Dict[str, Any]]:
+    ensure_mind7_allowed(stop_event)
     tab = tab or _pegar_aba(page, "mind", MIND7_URL)
+    _verificar_bloqueio_mind7(tab)
 
     try:
         if "consultas/celular" not in tab.url:
             tab.get(MIND7_URL)
             time.sleep(0.5)
 
-        if not check_and_solve_cloudflare(tab) or not _garantir_login_mind7(tab):
+        if not _garantir_login_mind7(tab):
             raise Mind7Unavailable("Mind7 aguarda login ou validação no navegador")
 
         campo = tab.ele("#documento", timeout=4)
         if not campo:
+            _verificar_bloqueio_mind7(tab)
             raise Mind7Unavailable("Formulário de telefone do Mind7 indisponível")
 
+        _verificar_bloqueio_mind7(tab)
         _limpar_resultado_mind7(tab)
 
         campo.input(phone, clear=True)
@@ -332,8 +380,10 @@ def _consultar_mind7_celular_browser_com_recovery(page, phone: str, clean_name: 
 
         botao = tab.ele("#botao-consultar", timeout=2)
         if not botao:
+            _verificar_bloqueio_mind7(tab)
             raise Mind7Unavailable("Botão de consulta do Mind7 indisponível")
-        botao.click()
+        _verificar_bloqueio_mind7(tab)
+        enviar_consulta_mind7(tab, botao, stop_event)
         log.info(f"[MIND7] Clicou no botão de consultar para {phone}. Aguardando resultado...")
 
         tab.scroll.to_bottom()
@@ -374,30 +424,35 @@ def _consultar_mind7_celular_browser_com_recovery(page, phone: str, clean_name: 
         log.error(f"Erro na consulta Mind7 Browser ({phone}): {exc}")
         raise
 
-def consultar_mind7_cpf(page, cpf: str, tab=None) -> Optional[Dict[str, Any]]:
+def consultar_mind7_cpf(page, cpf: str, tab=None, stop_event=None) -> Optional[Dict[str, Any]]:
     """
     Enriquecimento por CPF no Mind7 utilizando o Algoritmo do MODELO BASE:
     Prioriza a linha da RECEITA FEDERAL para extrair CEP e Número.
     """
+    ensure_mind7_allowed(stop_event)
     tab = tab or _pegar_aba(page, "mind", MIND7_CPF_URL)
+    _verificar_bloqueio_mind7(tab)
 
     try:
         if "consultas/cpf" not in tab.url:
             tab.get(MIND7_CPF_URL)
             time.sleep(0.5)
-        if not check_and_solve_cloudflare(tab) or not _garantir_login_mind7(tab):
+        if not _garantir_login_mind7(tab):
             raise Mind7Unavailable("Mind7 aguarda login ou validação no navegador")
 
         campo = tab.ele("#documento", timeout=4)
         if not campo:
+            _verificar_bloqueio_mind7(tab)
             # O portal às vezes abre o painel inicial no lugar da consulta por CPF.
             tab.get(MIND7_CPF_URL)
-            if not check_and_solve_cloudflare(tab) or not _garantir_login_mind7(tab):
+            if not _garantir_login_mind7(tab):
                 raise Mind7Unavailable("Mind7 aguarda login ou validação no navegador")
             campo = tab.ele("#documento", timeout=4)
             if not campo:
+                _verificar_bloqueio_mind7(tab)
                 raise Mind7Unavailable("Formulário de CPF do Mind7 indisponível")
 
+        _verificar_bloqueio_mind7(tab)
         _limpar_resultado_mind7(tab)
 
         campo.input(cpf, clear=True)
@@ -405,8 +460,10 @@ def consultar_mind7_cpf(page, cpf: str, tab=None) -> Optional[Dict[str, Any]]:
 
         botao = tab.ele("#botao-consultar", timeout=2)
         if not botao:
+            _verificar_bloqueio_mind7(tab)
             raise Mind7Unavailable("Botão de consulta do Mind7 indisponível")
-        botao.click()
+        _verificar_bloqueio_mind7(tab)
+        enviar_consulta_mind7(tab, botao, stop_event)
 
         texto_copiar = _aguardar_resultado_mind7(tab, 25)
         if texto_copiar is None:

@@ -1,5 +1,7 @@
 from DrissionPage import ChromiumPage, ChromiumOptions
+import pytest
 
+@pytest.mark.skip(reason="Diagnóstico manual: conecta a navegador real; fora da suíte offline.")
 def test_tabs():
     co = ChromiumOptions()
     co.set_local_port(9222)

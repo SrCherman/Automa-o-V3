@@ -25,6 +25,8 @@ from app.services.planilha import (
     adicionar_contatos_em_lote,
 )
 from app.services.scraper import iniciar_navegador, consultar_mind7, consultar_itau_credline
+from src.automation.mind7_rate_limit import BLOCK_FILE, Mind7AccessBlocked, ensure_mind7_allowed
+from src.automation.mind7_scraper import Mind7Unavailable
 
 
 app = FastAPI(title="Esteira de Qualificacao de Credito")
@@ -81,6 +83,7 @@ def _processar_pendentes():
         processando = True
 
     try:
+        ensure_mind7_allowed()
         pendentes = listar_pendentes()
         if not pendentes:
             print("[PROCESSADOR] Nenhum contato pendente encontrado.")
@@ -125,16 +128,15 @@ def _processar_pendentes():
             try:
                 dados_mind7 = None
 
+                ensure_mind7_allowed()
                 if cookies_mind7:
-                    try:
-                        dados_mind7 = api_client.consultar_mind7_api(telefone, cookies_mind7, nome_whats)
-                    except Exception as exc:
-                        print(f"  Mind7 API falhou, tentando visual: {exc}")
-
-                if not dados_mind7 and mind7_page:
-                    print("  Mind7 API indisponivel/sem dados. Tentando consulta visual no Edge autenticado...")
+                    dados_mind7 = api_client.consultar_mind7_api(telefone, cookies_mind7, nome_whats)
+                elif mind7_page:
+                    print("  Mind7: consulta visual no Edge autenticado.")
                     with mind7_browser_lock:
                         dados_mind7 = consultar_mind7(mind7_page, telefone, nome_whats)
+                else:
+                    raise Mind7Unavailable("Mind7 sem sessão disponível; consulta pendente.")
 
                 if not dados_mind7:
                     atualizar_resultado(
@@ -244,6 +246,9 @@ def _processar_pendentes():
                         "PENDENTE ITAU",
                         "Mind7 OK, navegador indisponivel para Itau",
                     )
+            except (Mind7AccessBlocked, Mind7Unavailable, TimeoutError):
+                print("  Mind7 bloqueado: consulta suspensa, sem marcar o contato como sem dados.")
+                atualizar_resultado(row_num, "", "", "PENDENTE", "Mind7 indisponível; acesso bloqueado.")
             except Exception as exc:
                 print(f"  ERRO ao processar {nome_whats}: {exc}")
                 atualizar_resultado(row_num, "", "", "ERRO", str(exc)[:50])
@@ -271,6 +276,8 @@ async def iniciar_processamento(background_tasks: BackgroundTasks):
     Dispara o processamento dos contatos pendentes em background.
     """
     global processando
+    if BLOCK_FILE.exists():
+        return {"status": "blocked", "message": "Mind7 bloqueado. Aguarde a liberação do provedor."}
     with process_lock:
         if processando:
             return {"status": "busy", "message": "Ja existe um processamento em andamento. Aguarde."}
@@ -299,6 +306,8 @@ async def webhook_contatos(payload: dict):
 async def automation_start():
     """Arma a automacao para o orquestrador iniciar o processamento."""
     global automation_armed, automation_started_at, automation_stopped_at
+    if BLOCK_FILE.exists():
+        return {"status": "blocked", "message": "Mind7 bloqueado. Aguarde a liberação do provedor."}
     with automation_lock:
         automation_armed = True
         automation_started_at = datetime.now().isoformat(timespec="seconds")
@@ -326,7 +335,8 @@ async def automation_state():
         started_at = automation_started_at
         stopped_at = automation_stopped_at
     return {
-        "armed": armed,
+        "armed": armed and not BLOCK_FILE.exists(),
+        "mind7_access_blocked": BLOCK_FILE.exists(),
         "started_at": started_at,
         "stopped_at": stopped_at,
         "processando": processando,

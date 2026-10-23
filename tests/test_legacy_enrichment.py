@@ -1,9 +1,28 @@
 from unittest.mock import Mock
+import pytest
 
 from openpyxl import Workbook
 
 from credit_pipeline import processar as legacy
 from src.automation.c6_scraper import C6Unavailable
+from src.automation.mind7_rate_limit import Mind7AccessBlocked
+
+
+@pytest.mark.parametrize("error", [Mind7AccessBlocked, TimeoutError])
+def test_legacy_mind7_pause_preserves_attempts_and_remaining_contacts(monkeypatch, error):
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Data", "Nome", "Telefone", "CPF", "Nome Mind7", "Status Itaú", "Obs", "CEP", "Numero", "Idade", "Valor"])
+    ws.append(["", "Primeiro", "45999990000", "12345678901"])
+    ws.append(["", "Segundo", "45999990001", "12345678902"])
+    lookup = Mock(side_effect=error("Consulta suspensa"))
+    monkeypatch.setattr(legacy, "consultar_mind7_cpf", lookup)
+    monkeypatch.setattr(legacy, "_salvar", Mock())
+    legacy.etapa_enriquecimento(wb, ws, Mock())
+    lookup.assert_called_once()
+    assert ws.cell(2, legacy._coluna(ws, "Status Enriquecimento")).value == "PENDENTE"
+    assert ws.cell(2, legacy._coluna(ws, "Tentativas Enriquecimento")).value == 0
+    assert ws.cell(3, legacy._coluna(ws, "Status Enriquecimento")).value is None
 
 
 def test_legacy_enriches_all_cpfs_and_preserves_itau(monkeypatch):

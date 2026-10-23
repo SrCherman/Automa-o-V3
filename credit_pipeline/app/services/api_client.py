@@ -2,6 +2,11 @@ import requests
 import json
 import re
 import os
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from src.automation.mind7_rate_limit import reserve_mind7_request, mark_mind7_blocked, Mind7AccessBlocked
+from src.automation.mind7_scraper import _verificar_bloqueio_mind7, Mind7Unavailable
 from bs4 import BeautifulSoup
 from DrissionPage import ChromiumPage, ChromiumOptions
 from app.utils.formatters import comparar_primeiro_nome
@@ -97,7 +102,7 @@ class DirectAPIClient:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Cookie": cookies_str,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
+            "User-Agent": "Automacao-V3 (Mind7 usage-limited client)",
             "X-Requested-With": "XMLHttpRequest",
             "Referer": "https://mind-7.org/painel/consultas/celular/"
         }
@@ -108,12 +113,24 @@ class DirectAPIClient:
             "termos_aceitos": "on"
         }
         
-        print(f"  Mind7 API: consultando telefone formatado {tel_formatado}")
-        response = self.session.post(url, headers=headers, data=payload)
+        def send():
+            try:
+                response = self.session.post(
+                    url, headers=headers, data=payload, timeout=30, allow_redirects=False,
+                )
+            except requests.RequestException as exc:
+                raise Mind7Unavailable("Resposta Mind7 incerta; confira antes de reenviar.") from exc
+            # Persistir a recusa antes de liberar o lock para outro processo.
+            if response.status_code in (403, 429):
+                mark_mind7_blocked(f"HTTP {response.status_code}")
+                raise Mind7AccessBlocked("Mind7 recusou a consulta; aguarde liberação do provedor.")
+            _verificar_bloqueio_mind7(None, BeautifulSoup(response.text, "html.parser").get_text(" ", strip=True))
+            return response
+        response = reserve_mind7_request(send=send)
         print(f"  Mind7 API: HTTP {response.status_code}, bytes={len(response.text)}")
         
         if response.status_code != 200:
-            return None
+            raise Mind7Unavailable(f"Mind7 indisponível: HTTP {response.status_code}")
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
