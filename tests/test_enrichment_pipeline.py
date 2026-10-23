@@ -241,6 +241,7 @@ def test_cpf_lookup_recovers_when_mind7_opens_dashboard(monkeypatch):
 
     tab = Tab()
     monkeypatch.setattr(mind7, "_garantir_login_mind7", lambda _: True)
+    monkeypatch.setattr(mind7, "_logar_se_preciso", lambda _: True)
     monkeypatch.setattr(mind7.time, "sleep", lambda _: None)
     monkeypatch.setattr(mind7, "reserve_mind7_request", lambda **kwargs: kwargs["send"]())
     result = mind7.consultar_mind7_cpf(Mock(), "12345678901", tab=tab)
@@ -649,3 +650,20 @@ def test_explicit_enrichment_start_reports_empty_when_no_contacts(database):
     response = flow.MultiCampaignOrchestrator().start_campaign(1, etapa_inicial="ENRIQUECIMENTO")
     assert response["status"] == "empty"
     assert "Nenhum contato elegível" in response["message"]
+
+
+def test_timeout_is_retried_before_pausing(database, monkeypatch):
+    with database() as db:
+        contact(db)
+    page = Mock()
+    page.get_tabs.return_value = [SimpleNamespace(url=flow.MIND7_CPF_URL)]
+    monkeypatch.setattr(flow, "get_campaign_browser_page", lambda *args: page)
+    monkeypatch.setattr(flow, "MIND7_RETRY_BASE_SECONDS", 0.01)
+    consulta = Mock(side_effect=TimeoutError("resposta lenta"))
+    monkeypatch.setattr(flow, "consultar_mind7_cpf", consulta)
+    w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", "ENRIQUECIMENTO")
+    w.start()
+    w._thread.join(timeout=5)
+    assert not w._thread.is_alive()
+    assert consulta.call_count == flow.MIND7_RETRY_LIMIT + 1
+    assert "ENRIQUECIMENTO" in w.stage_errors

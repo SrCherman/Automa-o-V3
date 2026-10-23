@@ -15,6 +15,13 @@ suspenso entre reinícios por `data/mind7_access_blocked.txt`.
   gastar tentativa do contato.
 - Envio interrompido há mais de 10 min (`.inflight` órfão) é descartado; um
   `.inflight` recente ainda exige revisão.
+- Desafio no POST (403 com `cf-mitigated`) é detectado pelo monitor de rede:
+  a página é recarregada, o checkbox do Turnstile é clicado e o envio repetido
+  (até 3 vezes, dentro do mesmo turno da fila).
+- Se o portal derrubar a sessão, `_logar_se_preciso` entra de novo com o login
+  do `.env` e aguarda o Turnstile antes de enviar o formulário.
+- O resultado pode vir sem `#copiar_dados` (layout novo): nesse caso vale o
+  texto visível do painel, exigindo 1 s de estabilidade antes de aceitar.
 
 ## Proteções aplicadas
 

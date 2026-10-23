@@ -234,3 +234,31 @@ def test_blocked_legacy_endpoints_and_worker_do_not_start(legacy_app, monkeypatc
     assert finish(main.automation_start())["status"] == "blocked"
     assert finish(main.automation_state())["mind7_access_blocked"] is True
     assert tasks.tasks == []
+
+
+def test_challenge_on_post_reloads_and_resubmits_once(monkeypatch):
+    tab, campo = Mock(), Mock()
+    tab.ele.return_value = campo
+    monkeypatch.setattr(shared, "_garantir_login_mind7", lambda t: True)
+    monkeypatch.setattr(shared, "_verificar_bloqueio_mind7", lambda *a, **k: None)
+    respostas = [shared.Mind7Challenge("cf"), "CPF: 12345678901"]
+    def responder(*args, **kwargs):
+        resposta = respostas.pop(0)
+        if isinstance(resposta, Exception):
+            raise resposta
+        return resposta
+    monkeypatch.setattr(shared, "enviar_consulta_mind7", responder)
+
+    assert shared._enviar_com_refresh(tab, campo, "12345678901") == "CPF: 12345678901"
+    campo.input.assert_called_once_with("12345678901", clear=True)
+
+
+def test_post_challenged_status_is_detected():
+    pkt = SimpleNamespace(url="https://mind-7.org/painel/consultas/cpf/bigdata.php",
+                          response=SimpleNamespace(status=403))
+    assert shared._pacote_desafiado(pkt)
+    pkt.response.status = 200
+    assert not shared._pacote_desafiado(pkt)
+    pkt.response.status = 403
+    pkt.url = "https://mind-7.org/analytics"
+    assert not shared._pacote_desafiado(pkt)

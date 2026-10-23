@@ -254,7 +254,7 @@ class CampaignWorkerSession:
                     else:
                         self._simular_c6_single(contact_id, page)
                     transient = 0
-                except Mind7Unavailable as exc:
+                except (Mind7Unavailable, TimeoutError) as exc:
                     transient += 1
                     if transient > MIND7_RETRY_LIMIT:
                         raise

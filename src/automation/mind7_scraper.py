@@ -17,6 +17,7 @@ from src.ingestion.rules import calcular_score_nome, extrair_nome_real
 log = logging.getLogger("mind7_scraper")
 
 CHALLENGE_WAIT_SECONDS = 25.0
+RESULT_GRACE_STEPS = 40  # 0,25 s cada = até 10 s de resposta atrasada
 CHALLENGE_TEXTOS = (
     "verify you are human", "verifique se você é humano", "verifique se voce e humano",
     "checking your browser", "executando verificação", "executando verificacao",
@@ -39,6 +40,10 @@ class Mind7GhostClick(Mind7Unavailable):
     """Não houve sinal observável de processamento após clicar; envio incerto."""
 
 
+class Mind7Challenge(Mind7Unavailable):
+    """Cloudflare desafiou o POST: a página precisa recarregar e o envio repetir."""
+
+
 def normalizar_nascimento(value: str) -> str:
     if isinstance(value, datetime):
         value = value.date()
@@ -55,19 +60,24 @@ def normalizar_nascimento(value: str) -> str:
     return ""
 
 
+def _valores_rotulados(texto: str, rotulo: str, valor: str) -> List[str]:
+    """Valores após rótulo, na mesma linha (tab/dois-pontos) ou na linha seguinte."""
+    padrao = rf"(?im)^[ \t]*{rotulo}[ \t]*:?[ \t]*(?:$[ \t]*\n+[ \t]*)?({valor})"
+    return re.findall(padrao, texto)
+
+
 def extrair_dados_cpf(texto: str, cpf: str) -> Dict[str, Any]:
     esperado = re.sub(r"\D", "", cpf)
     # O BigData inclui CPFs/nascimentos de parentes depois dos dados do titular.
     texto = re.split(
-        r"(?im)^\s*[-=]*\s*(?:PARENTES|POSS[ÍI]VEIS\s+VIZINHOS|VIZINHOS|RELACIONAMENTOS)\b[^\n]*",
+        r"(?im)^\s*[-=]*\s*(?:(?:MAPA|LISTA)\s+DE\s+)?"
+        r"(?:PARENTES|POSS[ÍI]VEIS\s+VIZINHOS|VIZINHOS?|RELACIONAMENTOS)\b[^\n]*",
         texto, maxsplit=1,
     )[0]
     # O Mind7 às vezes elimina os zeros iniciais ao exibir CPFs.
     # Restaurar pelo comprimento; a confirmação exata continua obrigatória.
-    valores_cpf = re.findall(
-        r"(?im)^\s*CPF\s*:\s*(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{8,11})(?!\d)",
-        texto,
-    )
+    valores_cpf = _valores_rotulados(
+        texto, r"CPF", r"\d{3}\.\d{3}\.\d{3}-\d{2}|\d{8,11}")
     encontrados = set()
     for value in valores_cpf:
         digits = re.sub(r"\D", "", value)
@@ -77,12 +87,16 @@ def extrair_dados_cpf(texto: str, cpf: str) -> Dict[str, Any]:
     if encontrados != {esperado}:
         raise ValueError("Mind7 devolveu dados sem confirmação do CPF consultado")
     dados = {"cpf": esperado, "mind7_name": "", "birth_date": "", "cep": "", "house_number": ""}
-    nome = re.search(r"(?im)^\s*NOME(?:\s+COMPLETO)?\s*:\s*(.+?)\s*$", texto)
-    if nome:
-        dados["mind7_name"] = nome.group(1).strip()
-    nasc = re.search(r"\b(?:data\s+de\s+)?nasc(?:imento|\.)?\s*:?\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", texto, re.I)
-    if nasc:
-        dados["birth_date"] = normalizar_nascimento(nasc.group(1))
+    for nome in _valores_rotulados(texto, r"NOME(?:\s+COMPLETO)?(?!\s+D[AE]\b)", r"[^\n|]+"):
+        nome = nome.strip()
+        if nome and "COMPLETO" not in nome.upper():
+            dados["mind7_name"] = nome
+            break
+    for nasc in _valores_rotulados(
+            texto, r"(?:DATA\s+DE\s+)?NASC(?:IMENTO|\.)?", r"\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2}"):
+        dados["birth_date"] = normalizar_nascimento(nasc)
+        if dados["birth_date"]:
+            break
     linhas = [l.strip() for l in texto.splitlines() if re.search(r"\b\d{5}-?\d{3}\b", l)]
     # Linhas de CPF também têm 8 dígitos e não são endereço.
     linhas = [l for l in linhas if not re.search(r"(?i)\bcpf\b", l)]
@@ -102,26 +116,44 @@ def _garantir_login_mind7(tab) -> bool:
             pass_elem = tab.ele("@name=senha", timeout=0.5) or tab.ele("@name=password", timeout=0.5) or tab.ele("@type=password", timeout=0.5) or tab.ele("#senha", timeout=0.5)
 
             try:
-                if email_elem and not email_elem.value:
-                    email_elem.input(MIND7_USER)
-                if pass_elem and not pass_elem.value:
-                    pass_elem.input(MIND7_PASS)
+                if email_elem:
+                    email_elem.input(MIND7_USER, clear=True)
+                if pass_elem:
+                    pass_elem.input(MIND7_PASS, clear=True)
             except Exception:
                 pass
 
             if email_elem and pass_elem:
-                botao = (tab.ele("@type=submit", timeout=0.3) or tab.ele("tag:button", timeout=0.3)
-                         or tab.ele("text:Entrar", timeout=0.3) or tab.ele("text:Acessar", timeout=0.3))
+                botao = (tab.ele("text:Entrar no painel", timeout=0.3)
+                         or tab.ele("text:Entrar", timeout=0.3)
+                         or tab.ele("text:Acessar", timeout=0.3)
+                         or tab.ele("@type=submit", timeout=0.3)
+                         or tab.ele("tag:button", timeout=0.3))
                 if botao:
-                    try:
-                        botao.click()
-                    except Exception:
-                        pass
-                    for _ in range(20):
-                        time.sleep(0.5)
-                        if "acesso" not in tab.url.lower() and "login" not in tab.url.lower():
-                            return True
-                        _verificar_bloqueio_mind7(tab)
+                    tentativas = 0
+                    while tentativas < 2:
+                        token = ""
+                        for _ in range(40):
+                            token = tab.run_js(
+                                "const i=document.querySelector('input[name=\"cf-turnstile-response\"]');"
+                                "return i ? i.value : ''") or ""
+                            if token:
+                                break
+                            _clicar_desafio(tab)
+                            time.sleep(0.5)
+                        try:
+                            botao.click()
+                        except Exception:
+                            pass
+                        for _ in range(20):
+                            time.sleep(0.5)
+                            if "acesso" not in tab.url.lower() and "login" not in tab.url.lower():
+                                return True
+                            _verificar_bloqueio_mind7(tab)
+                        corpo = _corpo_visivel(tab).lower()
+                        if "captcha" not in corpo:
+                            break
+                        tentativas += 1
 
             log.info("[MIND7] Login preenchido; aguardando a sessão do navegador...")
             return False
@@ -183,6 +215,47 @@ def _em_desafio(tab, texto: str, titulo="", *, html=True) -> bool:
             or _assinatura_desafio(tab, titulo, html=html))
 
 
+def _clicar_desafio(tab) -> bool:
+    """Turnstile gerenciado pode exigir um clique real no checkbox.
+
+    A janela do widget fica num shadow root fechado; clicamos pelas coordenadas
+    do host, medidas depois de centralizar o elemento na viewport.
+    """
+    try:
+        try:
+            tab.run_cdp("Page.bringToFront")
+            tab.run_cdp("Emulation.setFocusEmulationEnabled", enabled=True)
+        except Exception:
+            pass
+        rect = tab.run_js("""
+            const inp = document.querySelector('input[name="cf-turnstile-response"]');
+            if (!inp) return "";
+            inp.scrollIntoView({block: 'center'});
+            let el = inp.parentElement;
+            while (el && el.getBoundingClientRect().width < 200) el = el.parentElement;
+            if (!el) return "";
+            const r = el.getBoundingClientRect();
+            return [r.left, r.top, r.width, r.height].join(',');
+        """)
+        if not rect:
+            return False
+        x0, y0, w, h = (float(v) for v in rect.split(","))
+        x, y = x0 + min(14.0, w / 2), y0 + h / 2
+        tab.run_cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x - 25, y=y - 10)
+        time.sleep(0.15)
+        tab.run_cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+        time.sleep(0.15)
+        for kind in ("mousePressed", "mouseReleased"):
+            tab.run_cdp("Input.dispatchMouseEvent", type=kind, x=x, y=y,
+                        button="left", clickCount=1, pointerType="mouse")
+            time.sleep(0.05)
+        log.info("[CLOUDFLARE] Checkbox clicado.")
+        return True
+    except Exception as exc:
+        log.info("[CLOUDFLARE] Não foi possível clicar no checkbox: %s", exc)
+        return False
+
+
 def _verificar_bloqueio_mind7(tab, texto="", *, titulo="", esperar=True, checar_html=True):
     """Reconhece bloqueios e desafios; espera o Cloudflare resolver antes de concluir.
 
@@ -208,14 +281,38 @@ def _verificar_bloqueio_mind7(tab, texto="", *, titulo="", esperar=True, checar_
         raise Mind7AccessBlocked("Mind7 exige validação manual; consulta HTTP suspensa.")
     log.info("[CLOUDFLARE] Desafio ativo; aguardando o navegador validar...")
     deadline = time.monotonic() + CHALLENGE_WAIT_SECONDS
+    ultimo_clique = time.monotonic()
     while time.monotonic() < deadline:
         time.sleep(0.5)
         atual = _corpo_visivel(tab)
         if atual and not any(m in atual.lower() for m in CHALLENGE_TEXTOS):
             log.info("[CLOUDFLARE] Desafio resolvido.")
             return
+        # Managed challenge não resolve só: clicar no checkbox a cada 3 s.
+        if time.monotonic() - ultimo_clique >= 3.0:
+            ultimo_clique = time.monotonic()
+            _clicar_desafio(tab)
     raise Mind7Unavailable(
         "Cloudflare ainda validando o navegador; nova tentativa em instantes sem reenviar consulta.")
+
+
+def _logar_se_preciso(tab) -> bool:
+    """Sessão Mind7 expira após desafio; entrar de novo antes de consultar."""
+    if "Sair" in (_corpo_visivel(tab) or ""):
+        return True
+    if tab.ele("#documento", timeout=0):
+        return True
+    _verificar_bloqueio_mind7(tab)
+    tab.get(MIND7_LOGIN_URL)
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        _verificar_bloqueio_mind7(tab)
+        if tab.ele("@type=password", timeout=0.3):
+            return _garantir_login_mind7(tab)
+        if "Sair" in (_corpo_visivel(tab) or ""):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def probe_mind7_access(page, stop_event=None, tab=None) -> bool:
@@ -224,6 +321,8 @@ def probe_mind7_access(page, stop_event=None, tab=None) -> bool:
     True somente quando o formulário aparece e não há desafio/bloqueio.
     """
     tab = tab or _pegar_aba(page, "mind", MIND7_URL)
+    if not _logar_se_preciso(tab):
+        return False
     tab.get(MIND7_URL)
     deadline = time.monotonic() + 20.0
     while time.monotonic() < deadline:
@@ -235,6 +334,27 @@ def probe_mind7_access(page, stop_event=None, tab=None) -> bool:
         if "acesso" in tab.url.lower() or "login" in tab.url.lower():
             if _garantir_login_mind7(tab):
                 return True
+        time.sleep(0.5)
+    return False
+
+
+def _pacote_desafiado(pkt) -> bool:
+    """POST de consulta respondido com desafio Cloudflare (403/429)."""
+    try:
+        if pkt.response.status not in (403, 429):
+            return False
+        return "consult" in (pkt.url or "").lower()
+    except Exception:
+        return False
+
+
+def _aguardar_botao_livre(tab, seconds=20.0) -> bool:
+    """Não clicar enquanto o envio anterior ainda está processando."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        botao = tab.ele("#botao-consultar", timeout=0)
+        if botao and botao.states.is_enabled:
+            return True
         time.sleep(0.5)
     return False
 
@@ -279,6 +399,58 @@ def enviar_consulta_mind7(tab, botao, stop_event=None, timeout=30):
     return reserve_mind7_request(stop_event=stop_event, send=send)
 
 
+def _reabrir_formulario(tab, url=None, seconds=25.0):
+    """Recarrega a consulta e espera o desafio/Cloudflare liberar o formulário."""
+    alvo = url or tab.url
+    try:
+        tab.get(alvo)
+    except Exception:
+        pass
+    deadline = time.monotonic() + seconds
+    voltar = False
+    while time.monotonic() < deadline:
+        _verificar_bloqueio_mind7(tab)
+        campo = tab.ele("#documento", timeout=1)
+        if campo:
+            return campo
+        if "acesso" in tab.url.lower() or "login" in tab.url.lower():
+            if _garantir_login_mind7(tab):
+                return tab.ele("#documento", timeout=5)
+        if not voltar and alvo.rstrip("/") not in tab.url.rstrip("/"):
+            # O desafio pode redirecionar ao painel após resolver.
+            voltar = True
+            try:
+                tab.get(alvo)
+            except Exception:
+                pass
+        time.sleep(0.5)
+    return None
+
+
+def _enviar_com_refresh(tab, campo, valor, stop_event=None, *, timeout=30, url=None):
+    """Reenvio após desafio: recarrega, reautentica se preciso e repete."""
+    for tentativa in (1, 2, 3):
+        botao = tab.ele("#botao-consultar", timeout=2)
+        if not botao:
+            _verificar_bloqueio_mind7(tab)
+            raise Mind7Unavailable("Botão de consulta do Mind7 indisponível")
+        _verificar_bloqueio_mind7(tab)
+        try:
+            return enviar_consulta_mind7(tab, botao, stop_event, timeout=timeout)
+        except Mind7Challenge:
+            if tentativa == 3:
+                raise
+            time.sleep(1.5)
+            if not _garantir_login_mind7(tab):
+                raise Mind7Unavailable("Mind7 pediu login após o desafio")
+            campo = _reabrir_formulario(tab, url)
+            if not campo:
+                raise Mind7Unavailable("Formulário Mind7 indisponível após o desafio")
+            campo.input(valor, clear=True)
+            time.sleep(0.3)
+    return None
+
+
 def _limpar_resultado_mind7(tab):
     tab.run_js('''
         const resultado = document.getElementById("conteudo-retorno");
@@ -303,19 +475,32 @@ def _aguardar_resultado_mind7(tab, seconds: float, *, listener=None,
         copiar = tab.ele("#copiar_dados", timeout=0)
         texto = (copiar.value or "").strip() if copiar else ""
         resultado = tab.ele("#conteudo-retorno", timeout=0)
-        visivel = (resultado.raw_text or "").lower() if resultado and resultado.states.is_displayed else ""
+        visivel_raw = (resultado.raw_text or "") if resultado and resultado.states.is_displayed else ""
+        visivel = visivel_raw.lower()
         _verificar_bloqueio_mind7(tab, checar_html=False)
         _verificar_bloqueio_mind7(tab, visivel, checar_html=False)
         if monitor_funcional and not viu_post:
             try:
-                viu_post = bool(listener.wait(timeout=0.01, raise_err=False))
+                pkt = listener.wait(timeout=0.01, raise_err=False)
             except Exception:
                 # Erro de instrumentação não prova ausência de envio.
                 monitor_funcional = False
+                pkt = None
+            if pkt:
+                viu_post = True
+                if _pacote_desafiado(pkt):
+                    try:
+                        tab.refresh()
+                    except Exception:
+                        pass
+                    raise Mind7Challenge(
+                        "Cloudflare desafiou o envio; página recarregada para nova tentativa.")
         sem_dados = any(msg in visivel for msg in (
             "não foi possível encontrar", "nao foi possivel encontrar", "nenhum registro encontrado",
         ))
-        dados = texto if re.search(r"\b(?:cpf|cnpj)\s*:", texto, re.I) else ""
+        # Layout novo não tem #copiar_dados: o CPF aparece como rótulo isolado.
+        dados = texto if re.search(r"\b(?:cpf|cnpj)\s*:", texto, re.I) else (
+            visivel_raw if re.search(r"(?im)^\s*(?:cpf|cnpj)\b", visivel_raw) else "")
         habilitado = bool(botao and botao.states.is_enabled)
         if not habilitado or dados or sem_dados or viu_post:
             viu_atividade = True
@@ -332,6 +517,34 @@ def _aguardar_resultado_mind7(tab, seconds: float, *, listener=None,
     if not viu_atividade and (not monitor_funcional or not viu_post):
         raise Mind7GhostClick(
             "Nenhum indicador de loading, resultado ou POST concluído após o clique.")
+    # Portal às vezes responde atrasado: prorrogar antes de declarar envio incerto,
+    # evitando reenviar enquanto a primeira consulta ainda pode concluir.
+    for _ in range(RESULT_GRACE_STEPS):
+        ensure_mind7_allowed(stop_event)
+        copiar = tab.ele("#copiar_dados", timeout=0)
+        texto = (copiar.value or "").strip() if copiar else ""
+        resultado = tab.ele("#conteudo-retorno", timeout=0)
+        visivel_raw = (resultado.raw_text or "") if resultado else ""
+        # Layout novo não tem #copiar_dados: o CPF aparece como rótulo isolado.
+        if re.search(r"\b(?:cpf|cnpj)\s*:", texto, re.I):
+            dados, atual, origem = texto, texto, "copy"
+        elif re.search(r"(?im)^\s*(?:cpf|cnpj)\b", visivel_raw):
+            dados, atual, origem = visivel_raw, visivel_raw, "vis"
+        else:
+            dados = atual = ""
+            origem = ""
+        _verificar_bloqueio_mind7(tab, checar_html=False)
+        if dados:
+            time.sleep(0.5)
+            if origem == "copy":
+                copiar = tab.ele("#copiar_dados", timeout=0)
+                novo = (copiar.value or "").strip() if copiar else ""
+            else:
+                resultado = tab.ele("#conteudo-retorno", timeout=0)
+                novo = (resultado.raw_text or "") if resultado else ""
+            if novo == atual:
+                return dados
+        time.sleep(0.25)
     raise TimeoutError(f"Mind7 não concluiu a consulta em {seconds:g}s; envio incerto")
 
 
@@ -516,6 +729,8 @@ def _consultar_mind7_celular_browser_com_recovery(page, phone: str, clean_name: 
     ensure_mind7_allowed(stop_event)
     tab = tab or _pegar_aba(page, "mind", MIND7_URL)
     _verificar_bloqueio_mind7(tab)
+    if not _logar_se_preciso(tab):
+        raise Mind7Unavailable("Sessão Mind7 não autenticada")
 
     try:
         if "consultas/celular" not in tab.url:
@@ -531,17 +746,14 @@ def _consultar_mind7_celular_browser_com_recovery(page, phone: str, clean_name: 
             raise Mind7Unavailable("Formulário de telefone do Mind7 indisponível")
 
         _verificar_bloqueio_mind7(tab)
+        if not _aguardar_botao_livre(tab):
+            raise Mind7Unavailable("Botão Mind7 ocupado; consulta anterior ainda em curso")
         _limpar_resultado_mind7(tab)
 
         campo.input(phone, clear=True)
         time.sleep(0.3)
 
-        botao = tab.ele("#botao-consultar", timeout=2)
-        if not botao:
-            _verificar_bloqueio_mind7(tab)
-            raise Mind7Unavailable("Botão de consulta do Mind7 indisponível")
-        _verificar_bloqueio_mind7(tab)
-        texto_copiar = enviar_consulta_mind7(tab, botao, stop_event)
+        texto_copiar = _enviar_com_refresh(tab, campo, phone, stop_event, url=MIND7_URL)
         log.info(f"[MIND7] Consulta concluída para {phone}.")
         if texto_copiar is None:
             return None
@@ -586,6 +798,8 @@ def consultar_mind7_cpf(page, cpf: str, tab=None, stop_event=None) -> Optional[D
     ensure_mind7_allowed(stop_event)
     tab = tab or _pegar_aba(page, "mind", MIND7_CPF_URL)
     _verificar_bloqueio_mind7(tab)
+    if not _logar_se_preciso(tab):
+        raise Mind7Unavailable("Sessão Mind7 não autenticada")
 
     try:
         if "consultas/cpf" not in tab.url:
@@ -607,17 +821,14 @@ def consultar_mind7_cpf(page, cpf: str, tab=None, stop_event=None) -> Optional[D
                 raise Mind7Unavailable("Formulário de CPF do Mind7 indisponível")
 
         _verificar_bloqueio_mind7(tab)
+        if not _aguardar_botao_livre(tab):
+            raise Mind7Unavailable("Botão Mind7 ocupado; consulta anterior ainda em curso")
         _limpar_resultado_mind7(tab)
 
         campo.input(cpf, clear=True)
         time.sleep(0.2)
 
-        botao = tab.ele("#botao-consultar", timeout=2)
-        if not botao:
-            _verificar_bloqueio_mind7(tab)
-            raise Mind7Unavailable("Botão de consulta do Mind7 indisponível")
-        _verificar_bloqueio_mind7(tab)
-        texto_copiar = enviar_consulta_mind7(tab, botao, stop_event, timeout=25)
+        texto_copiar = _enviar_com_refresh(tab, campo, cpf, stop_event, timeout=25, url=MIND7_CPF_URL)
         if texto_copiar is None:
             return None
 

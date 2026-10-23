@@ -105,3 +105,15 @@ def test_foreign_login_page_never_receives_credentials():
     tab = Mock(url="https://example.invalid/acesso/?next=mind-7.org/painel/consultas/cpf/")
     assert mind7._garantir_login_mind7(tab) is False
     tab.ele.assert_not_called()
+
+def test_late_response_within_grace_is_returned(clock):
+    text = "CPF: 12345678901"
+    tab = ResultTab(clock, lambda now: text if now >= 4 else "", busy_until=1)
+    assert mind7._aguardar_resultado_mind7(tab, 3) == text
+
+
+def test_busy_button_is_awaited_before_new_send(clock):
+    tab = ResultTab(clock, lambda _: "", busy_until=2)
+    assert mind7._aguardar_botao_livre(tab, 5)
+    assert clock.now >= 0.5
+
