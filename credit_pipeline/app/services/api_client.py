@@ -124,7 +124,13 @@ class DirectAPIClient:
             if response.status_code in (403, 429):
                 mark_mind7_blocked(f"HTTP {response.status_code}")
                 raise Mind7AccessBlocked("Mind7 recusou a consulta; aguarde liberação do provedor.")
-            _verificar_bloqueio_mind7(None, BeautifulSoup(response.text, "html.parser").get_text(" ", strip=True))
+            soup = BeautifulSoup(response.text, "html.parser")
+            try:
+                _verificar_bloqueio_mind7(None, soup.get_text(" ", strip=True),
+                                         titulo=soup.title.get_text(strip=True) if soup.title else "")
+            except Mind7Unavailable as exc:
+                mark_mind7_blocked("Resposta HTTP exige validação no navegador")
+                raise Mind7AccessBlocked("Mind7 exige validação manual; consulta HTTP suspensa.") from exc
             return response
         response = reserve_mind7_request(send=send)
         print(f"  Mind7 API: HTTP {response.status_code}, bytes={len(response.text)}")

@@ -68,7 +68,7 @@ def test_portal_block_message_creates_persistent_stop(tmp_path, monkeypatch):
     flag = tmp_path / "blocked"
     monkeypatch.setattr(quota, "BLOCK_FILE", flag)
     tab = SimpleNamespace(ele=lambda *a, **kw: SimpleNamespace(
-        text="Bloqueio automático: 115 consultas em 5 min"))
+        raw_text="Bloqueio automático: 115 consultas em 5 min"))
     with pytest.raises(quota.Mind7AccessBlocked):
         scraper._verificar_bloqueio_mind7(tab)
     assert flag.exists()
@@ -175,8 +175,33 @@ def test_mark_blocked_never_overwrites_original(tmp_path, monkeypatch):
                                      "Too many requests", "Access denied", "Verify you are human"])
 def test_block_and_challenge_stop_before_navigation(message):
     tab = Mock(url="https://mind-7.org/painel/")
-    tab.ele.return_value = SimpleNamespace(text=message)
+    tab.ele.return_value = SimpleNamespace(raw_text=message)
     with pytest.raises(quota.Mind7AccessBlocked):
         scraper.consultar_mind7_cpf(Mock(), "12345678901", tab=tab)
     tab.get.assert_not_called()
     assert quota.BLOCK_FILE.exists()
+
+
+def test_hidden_loader_does_not_create_a_persistent_block():
+    body = SimpleNamespace(text="MIND7 Consultas CPF\nAguarde um momento...",
+                           raw_text="MIND7 Consultas CPF")
+    tab = SimpleNamespace(title="MIND7 - Consultas", ele=lambda *args, **kwargs: body)
+    scraper._verificar_bloqueio_mind7(tab)
+    assert not quota.BLOCK_FILE.exists()
+
+
+@pytest.mark.parametrize("text", ["Aguarde um momento, consultando...", "Just a moment, carregando dados..."])
+def test_normal_loading_message_is_not_a_challenge(text):
+    body = SimpleNamespace(text=text, raw_text=text)
+    tab = SimpleNamespace(title="MIND7 - Consultas", ele=lambda *args, **kwargs: body)
+    scraper._verificar_bloqueio_mind7(tab)
+    assert not quota.BLOCK_FILE.exists()
+
+
+@pytest.mark.parametrize("title", ["Just a moment...", "Um momento..."])
+def test_active_challenge_title_pauses_without_declaring_provider_block(title):
+    body = SimpleNamespace(text="", raw_text="")
+    tab = SimpleNamespace(title=title, ele=lambda *args, **kwargs: body)
+    with pytest.raises(scraper.Mind7Unavailable):
+        scraper._verificar_bloqueio_mind7(tab)
+    assert not quota.BLOCK_FILE.exists()

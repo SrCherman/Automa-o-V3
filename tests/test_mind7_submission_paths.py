@@ -55,7 +55,7 @@ def test_browser_query_submits_once_without_enter(app_modules, monkeypatch, path
         if selector == "#botao-consultar":
             return button
         if selector == "tag:body":
-            return SimpleNamespace(text="")
+            return SimpleNamespace(raw_text="")
     tab.ele.side_effect = element
     monkeypatch.setattr(shared, "_garantir_login_mind7", lambda tab: True)
     monkeypatch.setattr(shared, "_aguardar_resultado_mind7", lambda *args: None)
@@ -78,7 +78,8 @@ def test_browser_query_submits_once_without_enter(app_modules, monkeypatch, path
 
 
 @pytest.mark.parametrize("status,text", [(403, "Forbidden"), (429, "Too many requests"),
-                                         (200, "<div>Bloqueio automático</div>")])
+                                         (200, "<div>Bloqueio automático</div>"),
+                                         (200, "<title>Just a moment...</title><p>Enable JavaScript and cookies to continue</p>")])
 def test_http_block_response_persists_and_prevents_next_send(app_modules, status, text):
     _, api = app_modules
     client = api.DirectAPIClient()

@@ -115,12 +115,13 @@ def _pegar_aba(page, keyword: str, fallback_url: str):
     return page.new_tab(fallback_url)
 
 
-def _verificar_bloqueio_mind7(tab, texto=""):
+def _verificar_bloqueio_mind7(tab, texto="", *, titulo=""):
     """Reconhece bloqueios declarados pelo portal e interrompe novas consultas."""
     if not texto:
         try:
             body = tab.ele("tag:body", timeout=0.3)
-            texto = (body.text or "") if body else ""
+            # DrissionPage .text inclui elementos ocultos; .raw_text usa innerText.
+            texto = (body.raw_text or "") if body else ""
         except Exception:
             return
     lower = texto.lower() if isinstance(texto, str) else ""
@@ -138,11 +139,15 @@ def _verificar_bloqueio_mind7(tab, texto=""):
         raise Mind7AccessBlocked("Mind7 informou bloqueio de consultas. Processamento suspenso.")
     if any(message in lower for message in (
         "verify you are human", "verifique se você é humano", "verifique se voce e humano",
-        "just a moment", "checking your browser",
-        "um momento", "executando verificação", "executando verificacao",
+        "checking your browser", "executando verificação", "executando verificacao",
     )):
         mark_mind7_blocked("Portal exige validação manual")
         raise Mind7AccessBlocked("Conclua a validação manual do portal antes de retomar.")
+    title = titulo or getattr(tab, "title", "")
+    if isinstance(title, str) and any(message in title.lower() for message in (
+        "just a moment", "um momento",
+    )):
+        raise Mind7Unavailable("Mind7 aguarda validação do navegador; confira a aba antes de retomar.")
 
 
 def enviar_consulta_mind7(tab, botao, stop_event=None):
