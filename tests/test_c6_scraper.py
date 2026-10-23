@@ -89,10 +89,11 @@ def test_return_to_panel_checks_that_next_form_is_empty(monkeypatch):
     button = Mock()
     field = Mock(value="")
     monkeypatch.setattr(c6, "_button", lambda *a: button)
+    monkeypatch.setattr(c6, "_click_text", lambda *a: button.click())
     tab.ele.return_value = field
     c6.iniciar_nova_consulta(tab)
     c6.iniciar_nova_consulta(tab)
-    assert tab.get.call_count == button.click.call_count == 2
+    assert button.click.call_count == 2 and tab.get.call_count == 0
     field.value = "12345678901"
     with pytest.raises(c6.C6Unavailable, match="vazio"):
         c6.iniciar_nova_consulta(tab)
@@ -112,6 +113,7 @@ def test_new_proposal_retries_click_if_panel_does_not_navigate(monkeypatch):
     create.click.side_effect = lambda: clicks.append(1)
     field = Mock(value="")
     monkeypatch.setattr(c6, "_button", lambda *args: create)
+    monkeypatch.setattr(c6, "_click_text", lambda *a: create.click())
     monkeypatch.setattr(c6, "_wait", lambda predicate, seconds=20, stage=None: predicate())
     def element(selector, timeout=0):
         if 'plateNumber' in selector:
@@ -136,7 +138,7 @@ def test_login_accepts_direct_sso_return_to_panel(monkeypatch):
 
 def test_vehicle_type_is_selected_and_confirmed():
     tab = Mock()
-    select = Mock(raw_text="")
+    select = Mock(raw_text="SELECIONE")
     option = Mock(raw_text="VEÍCULOS LEVES")
     option.click.side_effect = lambda: setattr(select, "raw_text", "VEÍCULOS LEVES")
     tab.ele.return_value = select
@@ -148,7 +150,7 @@ def test_vehicle_type_is_selected_and_confirmed():
 
 def test_vehicle_type_retries_when_first_click_does_not_open_menu(monkeypatch):
     tab = Mock()
-    select = Mock(raw_text="")
+    select = Mock(raw_text="SELECIONE")
     option = Mock(raw_text="VEÍCULOS LEVES")
     option.click.side_effect = lambda: setattr(select, "raw_text", "VEÍCULOS LEVES")
     tab.ele.return_value = select
@@ -187,6 +189,7 @@ def test_submit_happens_after_validated_fields_and_callback(monkeypatch, entry, 
     events = []
     button.click.side_effect = lambda: events.append("click")
     monkeypatch.setattr(c6, "_button", lambda *a: button)
+    monkeypatch.setattr(c6, "_click_text", lambda *a: button.click())
     monkeypatch.setattr(c6, "_body", lambda _: "Valor sugerido\nFinanciamento R$ 117.000,00" if stale or "click" in events else "")
     if stale:
         with pytest.raises(c6.C6Unavailable, match="resultado anterior"):
@@ -239,6 +242,7 @@ def test_c6_waits_longer_than_old_limit_and_logs_the_delay(monkeypatch, caplog):
     button.attr.return_value = None
     button.click.side_effect = lambda: events.append("click")
     monkeypatch.setattr(c6, "_button", lambda *args: button)
+    monkeypatch.setattr(c6, "_click_text", lambda *a: button.click())
     def body(_):
         if "click" not in events:
             return ""
@@ -251,3 +255,12 @@ def test_c6_waits_longer_than_old_limit_and_logs_the_delay(monkeypatch, caplog):
     assert now[0] >= 60
     assert result["financed_value"] == "R$ 117.000,00"
     assert "resultado da simulacao concluido_em=60.0s" in caplog.text
+
+def test_above_75_is_out_of_policy_without_opening_the_portal():
+    page = Mock()
+    result = c6.consultar_c6_cpf(page, "19962118972", "4396346366", "1945-03-07", "ABC1D23",
+                                 "130.000,00", {"uf": "PR", "has_cnh": True, "entry_value": ""},
+                                 lambda: None)
+    assert result["status"] == "FORA DA POLITICA"
+    assert "75" in result["observation"]
+    page.get_tabs.assert_not_called()

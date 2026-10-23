@@ -9,13 +9,13 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
 from src.config import C6_URL, C6_USER, C6_PASS
-from src.automation.mind7_scraper import normalizar_nascimento
+from src.automation.mind7_scraper import normalizar_nascimento, _idade
 from src.automation.cloudflare_solver import check_and_solve_cloudflare
 
 log = logging.getLogger("orchestrator.c6")
-C6_FORM_TIMEOUT = 60
-C6_OPTION_TIMEOUT = 20
-C6_VEHICLE_TIMEOUT = 120
+C6_FORM_TIMEOUT = 20
+C6_OPTION_TIMEOUT = 6
+C6_VEHICLE_TIMEOUT = 90
 C6_RESULT_TIMEOUT = 180
 
 
@@ -81,7 +81,7 @@ def _wait(predicate, seconds=20, stage=None):
             if stage and elapsed >= 3:
                 log.info("[C6] carregamento=%s concluido_em=%.1fs", stage, elapsed)
             return result
-        time.sleep(0.25)
+        time.sleep(0.1)
     if stage:
         log.warning("[C6] carregamento=%s timeout_apos=%ss", stage, seconds)
     return None
@@ -90,6 +90,14 @@ def _wait(predicate, seconds=20, stage=None):
 def _body(tab):
     body = tab.ele("tag:body", timeout=0)
     return body.raw_text if body else ""
+
+
+def _click_text(tab, text):
+    """Clique via JS: botões Material ficam sob overlays e o clique nativo falha."""
+    return bool(tab.run_js(
+        "const b=[...document.querySelectorAll('button')]"
+        f".find(b=>b.innerText.trim().toUpperCase()==={text.upper()!r});"
+        "if(b){b.click();return true} return false"))
 
 
 def _button(tab, text):
@@ -121,25 +129,29 @@ def _login(tab):
 
 
 def iniciar_nova_consulta(tab):
-    tab.get(C6_URL)
+    """Abre um formulário limpo reaproveitando a aba, sem reload quando possível."""
+    if "pre-analysis" in tab.url or not _wait(
+            lambda: _button(tab, "CRIAR UMA NOVA PROPOSTA"), 1.0):
+        tab.get(C6_URL)
     if not _wait(lambda: _button(tab, "CRIAR UMA NOVA PROPOSTA") or tab.ele("#submit-button", timeout=0) or tab.ele("#username", timeout=0),
                  C6_FORM_TIMEOUT, "painel C6"):
         raise C6Unavailable("Painel C6 indisponível")
+    time.sleep(0.4)  # deixa o router do painel terminar antes de clicar
     if "/shopkeeper-panel" not in tab.url:
         _login(tab)
     if urlparse(tab.url).hostname != "c6auto.com.br":
         raise C6Unavailable("C6 redirecionou para um domínio não reconhecido")
     field = None
-    for _ in range(2):
-        create = _wait(lambda: _button(tab, "CRIAR UMA NOVA PROPOSTA"), C6_FORM_TIMEOUT, "nova proposta")
+    for _ in range(3):
+        create = _wait(lambda: _button(tab, "CRIAR UMA NOVA PROPOSTA"), 5, "nova proposta")
         if not create:
-            raise C6Unavailable("C6 não disponibilizou uma nova proposta")
-        create.click()
+            break
+        _click_text(tab, "CRIAR UMA NOVA PROPOSTA")
+        time.sleep(0.6)  # Angular liga o handler do router depois de pintar o botão
         # O CPF aparece antes de o C6 terminar de carregar produto, UF e placa.
-        field = _wait(lambda: tab.ele('css:input[formcontrolname="plateNumber"]', timeout=0)
-                      and tab.ele('css:input[formcontrolname="numeroDocumento"]', timeout=0),
-                      C6_FORM_TIMEOUT, "formulario da proposta")
-        if field or "/shopkeeper-panel" not in tab.url:
+        field = _wait(lambda: tab.ele('css:input[formcontrolname="numeroDocumento"]', timeout=0),
+                      8, "formulario da proposta")
+        if field:
             break
     if not field or re.sub(r"\D", "", field.value or ""):
         raise C6Unavailable("O C6 não abriu um formulário novo e vazio")
@@ -184,7 +196,9 @@ def _select_vehicle_type(tab, vehicle_type):
     if not select:
         raise C6Unavailable("Campo de tipo de veículo C6 indisponível")
     expected = label(vehicle_type)
-    if label(select.raw_text) != expected:
+    # Enquanto o Angular carrega o texto fica vazio: espera curta, depois mantém o padrão.
+    atual = _wait(lambda: label(select.raw_text), 5) or ""
+    if atual and atual != expected:
         option = None
         for _ in range(2):
             select.click()
@@ -196,7 +210,8 @@ def _select_vehicle_type(tab, vehicle_type):
         if not option:
             raise C6Unavailable("Tipo de veículo não disponível no C6")
         option.click()
-    if not _wait(lambda: label(select.raw_text) == expected, C6_OPTION_TIMEOUT, "confirmacao do tipo de veiculo"):
+    if atual and not _wait(lambda: label(select.raw_text) == expected,
+                           C6_OPTION_TIMEOUT, "confirmacao do tipo de veiculo"):
         raise ValueError("C6 não confirmou o tipo de veículo")
 
 
@@ -208,6 +223,9 @@ def consultar_c6_cpf(page, cpf, phone, birth_date, plate, vehicle_value, options
     uf = str(options.get("uf", "")).upper()
     if len(cpf) != 11 or len(set(cpf)) == 1 or not nascimento or len(plate) != 7:
         raise ValueError("CPF, nascimento ou placa inválidos para o C6")
+    if int(_idade(nascimento) or 0) > 75:
+        return {"status": "FORA DA POLITICA", "financed_value": None,
+                "observation": "C6: cliente acima de 75 anos (limite do portal)"}
     if uf not in "AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO".split():
         raise ValueError("UF inválida para o C6")
     if options.get("has_cnh") not in (True, False, 0, 1):
@@ -232,7 +250,13 @@ def consultar_c6_cpf(page, cpf, phone, birth_date, plate, vehicle_value, options
     for control, value in fields.items():
         field = _input(tab, control, value)
         if re.sub(r"\D", "", field.value or "") != re.sub(r"\D", "", value) or field.attr("aria-invalid") == "true":
-            raise ValueError(f"C6 rejeitou o campo {control}")
+            erro = ""
+            try:
+                bloco = field.ele("xpath:ancestor::*/descendant::mat-error", timeout=0.3)
+                erro = (bloco.text or "").strip() if bloco else ""
+            except Exception:
+                pass
+            raise ValueError(f"C6 rejeitou o campo {control}{': ' + erro if erro else ''}")
     cnh = _wait(lambda: tab.ele('xpath://mat-checkbox[contains(.,"Cliente possui CNH")]//input', timeout=0),
                 C6_FORM_TIMEOUT, "campo de CNH")
     if not cnh:
@@ -276,7 +300,7 @@ def consultar_c6_cpf(page, cpf, phone, birth_date, plate, vehicle_value, options
     if extrair_resultado_c6(_body(tab)):
         raise C6Unavailable("C6 ainda exibe um resultado anterior; abra uma nova proposta antes de consultar")
     before_submit()
-    simulate.click()
+    _click_text(tab, "SIMULAR")
     result = _wait(lambda: extrair_resultado_c6(_body(tab)), C6_RESULT_TIMEOUT, "resultado da simulacao")
     if not result:
         raise TimeoutError("C6 recebeu a consulta, mas o resultado não foi confirmado. Confira a aba antes de repetir.")
