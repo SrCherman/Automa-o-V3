@@ -13,6 +13,13 @@ from src.automation import mind7_rate_limit as quota
 from src.automation import mind7_scraper as shared
 
 
+@pytest.fixture(autouse=True)
+def isolated_mind7_state(tmp_path, monkeypatch):
+    """Nunca usar o marcador ou ledger de produção nos testes."""
+    monkeypatch.setattr(quota, "BLOCK_FILE", tmp_path / "mind7_access_blocked.txt")
+    monkeypatch.setattr(quota, "LEDGER_FILE", tmp_path / "mind7_query_quota.sqlite")
+
+
 @pytest.fixture
 def app_modules(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "credit_pipeline"))
@@ -139,7 +146,8 @@ def test_http_block_response_persists_and_prevents_next_send(app_modules, status
     client.session.post.assert_called_once()
     options = client.session.post.call_args.kwargs
     assert options["timeout"] == 30 and options["allow_redirects"] is False
-    assert options["headers"]["User-Agent"].startswith("Automacao-V3")
+    assert options["headers"]["User-Agent"].startswith("Mozilla/5.0")
+    assert "Edg/" in options["headers"]["User-Agent"]
     assert quota.BLOCK_FILE.exists()
 
 

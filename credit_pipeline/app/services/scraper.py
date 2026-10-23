@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from src.automation.mind7_rate_limit import Mind7AccessBlocked, ensure_mind7_allowed
-from src.automation.mind7_scraper import _verificar_bloqueio_mind7, _limpar_resultado_mind7, Mind7Unavailable, enviar_consulta_mind7
+from src.automation.mind7_scraper import _verificar_bloqueio_mind7, _limpar_resultado_mind7, Mind7Unavailable, enviar_consulta_mind7, _nome_da_linha
 from datetime import date, datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 from typing import Dict, Any, Optional
@@ -202,7 +202,7 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
         def extrair_numero_endereco(bloco_str: str) -> str:
             lines = bloco_str.split("\n")
             for line in lines:
-                if any(k in line.lower() for k in ["endereço", "endereco", "logradouro", "rua", "av", "avenida", "travessa"]):
+                if any(k in line.lower() for k in ["endereço", "endereco", "logradouro", "rua", "av", "avenida", "travessa"]) and "cpf" not in line.lower():
                     m = re.search(r"(?:rua|av|avenida|travessa|alameda|praca|rodovia|logradouro|endereco).*?,\s*(\d+)\b", line, re.I)
                     if m:
                         return m.group(1)
@@ -223,14 +223,16 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
             if not cpf_match:
                 cpf_match = re.search(r"CPF:\s*(\d{3}\.\d{3}\.\d{3}-\d{2})", bloco)
             if not cpf_match:
+                cpf_match = re.search(r"CPF:\s*(\d{8,10})(?!\d)", bloco)
+            if not cpf_match:
                 continue
                 
-            cpf_limpo = re.sub(r"\D", "", cpf_match.group(1))
+            cpf_limpo = re.sub(r"\D", "", cpf_match.group(1)).zfill(11)
             if len(cpf_limpo) != 11 or len(set(cpf_limpo)) == 1:
                 continue
                 
             nome_match = re.search(r"NOME:\s*(.*)", bloco, re.I)
-            nome_raw = nome_match.group(1).strip() if nome_match else "Desconhecido"
+            nome_raw = _nome_da_linha(nome_match.group(1)) if nome_match else "Desconhecido"
             
             cep = ""
             cep_match = re.search(r"\b(\d{5}-\d{3})\b", bloco)
@@ -268,9 +270,10 @@ def consultar_mind7(page: ChromiumPage, telefone: str, pushName: str) -> Optiona
                         if "CPF:" in p:
                             cpf_raw = p.replace("CPF:", "").strip()
                             if idx + 1 < len(partes):
-                                nome_raw = partes[idx+1].strip()
+                                nome_raw = partes[idx+1]
                     
-                    cpf_limpo = re.sub(r"\D", "", cpf_raw)
+                    cpf_limpo = re.sub(r"\D", "", cpf_raw).zfill(11)
+                    nome_raw = _nome_da_linha(nome_raw)
                     if len(cpf_limpo) == 11 and len(set(cpf_limpo)) > 1 and nome_raw:
                         cep = ""
                         cep_match = re.search(r"\b(\d{5}-?\d{3})\b", linha_txt)

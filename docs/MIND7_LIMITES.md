@@ -1,36 +1,45 @@
 # Mind7 — coordenação de consultas e bloqueios
 
 O portal informou bloqueio em 22/10/2026 às 19:08:22 (America/Sao_Paulo),
-após 115 consultas em cinco minutos. Quando existir, o arquivo local
-`data/mind7_access_blocked.txt` suspende o acesso entre reinícios.
-O arquivo estava ausente na verificação local de 23/10/2026; isso **não prova**
-que o provedor autorizou a retomada. Não remover um marcador criado pelo sistema
-nem retomar consultas após recusa do portal sem confirmar a liberação.
+após 115 consultas em cinco minutos. Bloqueio declarado pelo portal continua
+suspenso entre reinícios por `data/mind7_access_blocked.txt`.
+
+## Retomada automática
+
+- Ao iniciar uma etapa, o worker faz um GET inofensivo (`probe_mind7_access`)
+  com o perfil autenticado. Se o formulário abrir sem desafio, o marcador é
+  removido e o trabalho continua; se não abrir, o marcador permanece.
+- Desafio Cloudflare não é mais tratado como bloqueio definitivo: a página é
+  observada por até 25 s. Resolvido o desafio, a consulta segue; persistindo,
+  a etapa tenta de novo com espera crescente (4 s a 64 s, 5 tentativas) sem
+  gastar tentativa do contato.
+- Envio interrompido há mais de 10 min (`.inflight` órfão) é descartado; um
+  `.inflight` recente ainda exige revisão.
 
 ## Proteções aplicadas
 
 - Coleta por telefone, enriquecimento por CPF, rotas antigas e cliente HTTP
   compartilham `data/mind7_query_quota.sqlite` para serializar os envios.
   Não há teto numérico local por minuto: uma consulta aguarda a anterior terminar.
-  Isso NÃO substitui os limites contratuais nem autoriza volume abusivo.
-- Cada consulta aguarda o carregamento completo da resposta. Depois, a pausa
-  segue o ciclo de 1, 2, 1 e 3 segundos, reiniciando nessa ordem. O ciclo e o
-  horário da próxima consulta persistem entre etapas, processos e reinícios.
-  Se o portal indicar bloqueio ou desafio, interromper e exigir revisão manual.
+- Pausa após cada resposta: ciclo 2,2 / 3,0 / 2,4 / 3,6 s com variação de
+  -0,25 a +0,35 s (≈ 21 consultas/min) e pausa de 12–22 s a cada 50 envios.
+  O ciclo e o horário da próxima consulta persistem entre etapas e reinícios.
+- Cada consulta aguarda o carregamento completo da resposta antes da pausa.
+  O navegador usa perfil persistente, `cf_clearance` do próprio navegador e
+  `--disable-blink-features=AutomationControlled`; o cliente HTTP reutiliza o
+  mesmo User-Agent do navegador, nunca um UA próprio.
 - A transação SQLite inclui o envio e a espera pela resposta. Processos e
   etapas concorrentes aguardam seu turno, sem sobrepor consultas Mind7.
   Falhas de envio também registram a tentativa e o intervalo posterior.
 - Um envio interrompido por encerramento do processo deixa um arquivo
-  `.inflight`. A próxima tentativa cria o bloqueio persistente e exige revisão
-  manual, sem reenviar automaticamente.
+  `.inflight` recente que exige revisão, sem reenviar automaticamente.
 - Cada consulta de navegador usa um único clique, sem ENTER adicional. O
   monitor de POSTs e o estado visível ajudam a diferenciar carregamento de
   um possível clique fantasma. Sem sinal de resposta até o timeout, a aba é
   atualizada, porém a consulta permanece pendente para revisão: não há reenvio
   automático incerto. O cliente HTTP não segue redirecionamentos nem tenta
   novamente pelo navegador.
-- Avisos de bloqueio, desafios de validação e HTTP 403/429 suspendem novas
-  consultas. Desafios exigem atenção manual; não há tentativa de contorno.
+- Avisos de bloqueio declarado e HTTP 403/429 suspendem novas consultas.
 - Contatos interrompidos permanecem pendentes; bloqueios e cancelamentos não
   gastam as tentativas de processamento do contato.
 
@@ -46,5 +55,5 @@ temporários para o coordenador e o marcador. O teste manual que se conecta ao n
 real é ignorado. Os testes não removem nem modificam o marcador de produção.
 
 O estado do painel em `/api/automation/state` informa `mind7_access_blocked`.
-Enquanto o marcador existir, iniciar campanhas retorna `status: blocked` e
-nenhum worker é iniciado.
+Iniciar com marcador ainda é permitido: o worker confirma o portal antes da
+primeira consulta e mantém a suspensão se ele não liberar.

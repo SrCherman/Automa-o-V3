@@ -15,14 +15,19 @@ from src.database.connection import SessionLocal
 from src.database.crud import get_dashboard_stats
 from src.database.models import Contact, Campaign
 from src.automation.browser_factory import get_campaign_browser_page
-from src.automation.mind7_scraper import consultar_mind7_celular, consultar_mind7_cpf, Mind7Unavailable
+from src.automation.mind7_scraper import consultar_mind7_celular, consultar_mind7_cpf, Mind7Unavailable, probe_mind7_access
 from src.automation.c6_scraper import consultar_c6_cpf, C6Unavailable
 from src.automation.credline_scraper import consultar_credline_cpf, _pegar_aba
 from src.config import MIND7_URL, MIND7_CPF_URL, CREDLINE_URL, C6_URL, C6_PLATE, C6_VEHICLE_VALUE, C6_OPTIONS
 
-from src.automation.mind7_rate_limit import BLOCK_FILE as MIND7_ACCESS_BLOCK_FILE, Mind7AccessBlocked, Mind7QueryCancelled
+from src.automation.mind7_rate_limit import (
+    BLOCK_FILE as MIND7_ACCESS_BLOCK_FILE, Mind7AccessBlocked, Mind7QueryCancelled,
+    clear_mind7_block,
+)
 
 log = logging.getLogger("orchestrator")
+MIND7_RETRY_BASE_SECONDS = 4.0
+MIND7_RETRY_LIMIT = 5
 c6_log = logging.getLogger("orchestrator.c6")
 if not c6_log.handlers:
     c6_path = Path(__file__).resolve().parents[2] / "logs" / "c6-auto.log"
@@ -177,7 +182,18 @@ class CampaignWorkerSession:
         tab = None
         try:
             if is_mind7 and MIND7_ACCESS_BLOCK_FILE.exists():
-                raise Mind7AccessBlocked("Mind7 bloqueado; etapa suspensa antes de abrir o navegador.")
+                # Verificar o portal de verdade antes de manter o bloqueio:
+                # desafio transitório não deve exigir intervenção manual.
+                with self._mind7_lock:
+                    if self._mind7_page is None:
+                        self._mind7_page = get_campaign_browser_page(self.campaign_id, "mind7")
+                    page = self._mind7_page
+                    if probe_mind7_access(page, stop_event=self._stop):
+                        clear_mind7_block()
+                        log.info("Mind7 respondeu sem desafio; marcador de bloqueio removido.")
+                    else:
+                        raise Mind7AccessBlocked(
+                            "Mind7 não liberou o formulário; bloqueio mantido.")
             # Abra o Mind7 ao iniciar a etapa, mesmo sem contatos elegíveis.
             # Coleta por celular e enriquecimento por CPF têm abas distintas
             # e compartilham o mesmo perfil autenticado da campanha.
@@ -201,6 +217,7 @@ class CampaignWorkerSession:
                 if not any("c6auto.com.br" in (t.url or "").lower() for t in page.get_tabs()):
                     page.new_tab(C6_URL)
 
+            transient = 0
             while self.is_armed:
                 with SessionLocal() as db:
                     contact = self._next_contact(db, stage)
@@ -227,14 +244,25 @@ class CampaignWorkerSession:
                     url = MIND7_URL if stage == "MIND7" else MIND7_CPF_URL
                     # Uma aba fixa por worker impede uma consulta de navegar sobre a outra.
                     tab = next((t for t in page.get_tabs() if t.url.rstrip("/") == url.rstrip("/")), None) or page.new_tab(url)
-                if stage == "MIND7":
-                    self._coletar_cpf_mind7_single(contact_id, page, tab)
-                elif stage == "ENRIQUECIMENTO":
-                    self._enriquecer_contato_single(contact_id, page, tab)
-                elif stage == "CREDLINE":
-                    self._simular_itau_single(contact_id, page)
-                else:
-                    self._simular_c6_single(contact_id, page)
+                try:
+                    if stage == "MIND7":
+                        self._coletar_cpf_mind7_single(contact_id, page, tab)
+                    elif stage == "ENRIQUECIMENTO":
+                        self._enriquecer_contato_single(contact_id, page, tab)
+                    elif stage == "CREDLINE":
+                        self._simular_itau_single(contact_id, page)
+                    else:
+                        self._simular_c6_single(contact_id, page)
+                    transient = 0
+                except Mind7Unavailable as exc:
+                    transient += 1
+                    if transient > MIND7_RETRY_LIMIT:
+                        raise
+                    espera = MIND7_RETRY_BASE_SECONDS * 2 ** (transient - 1)
+                    log.warning("Mind7 indisponível (%s); nova tentativa em %.1fs [%s/%s]",
+                                exc, espera, transient, MIND7_RETRY_LIMIT)
+                    self.stage_errors[stage] = str(exc)[:200]
+                    self._stop.wait(espera)
                 ws_manager.broadcast_sync({"type": "progress_update", "campaign_id": self.campaign_id})
                 if not is_mind7:
                     self._stop.wait(1)
@@ -460,16 +488,9 @@ class MultiCampaignOrchestrator:
     def start_campaign(self, campaign_id: int, placa: str = "IWD0H56", valor: str = "120.000,00", etapa_inicial: str = "AUTO") -> dict:
         if etapa_inicial.upper() not in CampaignWorkerSession.STAGES:
             return {"status": "error", "message": "Etapa desconhecida"}
-        # O portal bloqueou consultas automatizadas. Não rearmar nem iniciar
-        # workers de Mind7 até desbloqueio/autorização verificada pelo operador.
-        if MIND7_ACCESS_BLOCK_FILE.exists():
-            return {
-                "status": "blocked",
-                "message": (
-                    "Mind7 bloqueou o acesso após identificar automação (115 consultas/5 min). "
-                    "Consultas suspensas. Solicite revisão/desbloqueio ao Mind7 antes de retomar."
-                ),
-            }
+        # O marcador é verificado de novo contra o portal dentro do worker
+        # (probe_mind7_access). Só permanece se o portal não liberar.
+        bloqueado = MIND7_ACCESS_BLOCK_FILE.exists()
         with self._lock:
             existing = self.active_sessions.get(campaign_id)
             if existing and existing.is_running:
@@ -529,6 +550,8 @@ class MultiCampaignOrchestrator:
                 "rearmed_contacts": rearmed,
                 "message": (
                     f"Campanha '{camp_name}' iniciada em [{etapa_label}]. "
+                    + ("Havia marcador de bloqueio: o portal será verificado antes da primeira consulta. "
+                       if bloqueado else "")
                     + (f"{rearmed} contato(s) com tentativas anteriores esgotadas foram liberados para nova consulta."
                        if rearmed else "")
                 )

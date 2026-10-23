@@ -75,15 +75,16 @@ def test_persistent_block_stops_start_and_worker_before_browser(database, monkey
     flow.MIND7_ACCESS_BLOCK_FILE.write_text("Bloqueio original", encoding="utf-8")
     browser = Mock()
     monkeypatch.setattr(flow, "get_campaign_browser_page", browser)
+    monkeypatch.setattr(flow, "probe_mind7_access", Mock(return_value=False))
     orchestrator = flow.MultiCampaignOrchestrator()
-    assert orchestrator.start_campaign(1, etapa_inicial="MIND7")["status"] == "blocked"
+    assert orchestrator.start_campaign(1, etapa_inicial="MIND7")["status"] == "started"
     assert orchestrator.get_state()["mind7_access_blocked"] is True
-    assert orchestrator.active_sessions == {}
     w = worker()
     w._run_stage("MIND7")
     assert w._stop.is_set() and not w.is_armed
     assert "MIND7" in w.stage_errors
-    browser.assert_not_called()
+    assert flow.MIND7_ACCESS_BLOCK_FILE.exists()
+    browser.assert_called()
 
 
 def test_extraction_preserves_birth_date_and_cpf():
@@ -509,6 +510,7 @@ def test_paused_mind7_reason_is_available_after_worker_stops(database, monkeypat
     page = Mock()
     page.get_tabs.return_value = [SimpleNamespace(url=flow.MIND7_CPF_URL)]
     monkeypatch.setattr(flow, "get_campaign_browser_page", lambda *args: page)
+    monkeypatch.setattr(flow, "MIND7_RETRY_BASE_SECONDS", 0.01)
     monkeypatch.setattr(flow, "consultar_mind7_cpf", Mock(side_effect=mind7.Mind7Unavailable("Abra o formulário CPF")))
     w = flow.CampaignWorkerSession(1, "Teste", "ABC1D23", "130.000,00", "ENRIQUECIMENTO")
     w.start()

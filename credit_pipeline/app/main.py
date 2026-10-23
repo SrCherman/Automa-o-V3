@@ -1,4 +1,4 @@
-"""
+﻿"""
 Ponto de entrada da aplicacao FastAPI.
 Fluxo manual:
   1. A planilha Excel recebe nome + telefone preenchidos manualmente
@@ -102,6 +102,7 @@ def _processar_pendentes():
             print(f"[PROCESSADOR] Aviso: nao foi possivel ler cookies do navegador: {exc}")
 
         cookies_mind7 = auth.get("mind7_cookies", "") if isinstance(auth, dict) else ""
+        user_agent = auth.get("mind7_user_agent", "") if isinstance(auth, dict) else ""
         if not cookies_mind7:
             print("[PROCESSADOR] Aviso: cookies do Mind7 nao encontrados. Vou depender da consulta visual.")
 
@@ -130,7 +131,7 @@ def _processar_pendentes():
 
                 ensure_mind7_allowed()
                 if cookies_mind7:
-                    dados_mind7 = api_client.consultar_mind7_api(telefone, cookies_mind7, nome_whats)
+                    dados_mind7 = api_client.consultar_mind7_api(telefone, cookies_mind7, nome_whats, user_agent)
                 elif mind7_page:
                     print("  Mind7: consulta visual no Edge autenticado.")
                     with mind7_browser_lock:

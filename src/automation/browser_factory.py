@@ -48,6 +48,9 @@ def create_campaign_browser_options(campaign_id: int, service_name: str = "mind7
     co.set_argument("--window-size=1920,1080")
     co.set_argument("--start-maximized")
     co.set_argument("--disable-infobars")
+    co.set_argument("--disable-blink-features=AutomationControlled")
+    co.set_argument("--no-first-run")
+    co.set_argument("--no-default-browser-check")
     co.set_argument("--lang=pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
 
     return co

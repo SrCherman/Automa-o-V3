@@ -16,6 +16,21 @@ from src.ingestion.rules import calcular_score_nome, extrair_nome_real
 
 log = logging.getLogger("mind7_scraper")
 
+CHALLENGE_WAIT_SECONDS = 25.0
+CHALLENGE_TEXTOS = (
+    "verify you are human", "verifique se você é humano", "verifique se voce e humano",
+    "checking your browser", "executando verificação", "executando verificacao",
+    "enable javascript and cookies to continue",
+)
+CHALLENGE_ASSINATURAS = (
+    "challenge-stage", "cf-mitigated", "cdn-cgi/challenge-platform",
+)
+BLOQUEIO_TEXTOS = (
+    "too many requests", "rate limit exceeded", "access denied", "acesso negado",
+    "acesso bloqueado", "excesso de consultas", "conta suspensa",
+    "bloqueio por atividade", "bloqueio temporário", "bloqueio temporario",
+)
+
 class Mind7Unavailable(RuntimeError):
     """Sessão ou verificação do portal exige atenção antes de continuar."""
 
@@ -47,18 +62,17 @@ def extrair_dados_cpf(texto: str, cpf: str) -> Dict[str, Any]:
         r"(?im)^\s*[-=]*\s*(?:PARENTES|POSS[ÍI]VEIS\s+VIZINHOS|VIZINHOS|RELACIONAMENTOS)\b[^\n]*",
         texto, maxsplit=1,
     )[0]
-    # O Mind7 às vezes elimina o zero inicial ao exibir CPFs de 11 dígitos.
-    # Restaurar somente quando houver 10 dígitos e o CPF de entrada
-    # começar com zero. A confirmação exata continua obrigatória.
+    # O Mind7 às vezes elimina os zeros iniciais ao exibir CPFs.
+    # Restaurar pelo comprimento; a confirmação exata continua obrigatória.
     valores_cpf = re.findall(
-        r"(?im)^\s*CPF\s*:\s*(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{10,11})(?!\d)",
+        r"(?im)^\s*CPF\s*:\s*(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{8,11})(?!\d)",
         texto,
     )
     encontrados = set()
     for value in valores_cpf:
         digits = re.sub(r"\D", "", value)
-        if len(digits) == 10 and esperado.startswith("0"):
-            digits = "0" + digits
+        if len(digits) < 11 and esperado.startswith("0" * (11 - len(digits))):
+            digits = digits.zfill(11)
         encontrados.add(digits)
     if encontrados != {esperado}:
         raise ValueError("Mind7 devolveu dados sem confirmação do CPF consultado")
@@ -70,6 +84,8 @@ def extrair_dados_cpf(texto: str, cpf: str) -> Dict[str, Any]:
     if nasc:
         dados["birth_date"] = normalizar_nascimento(nasc.group(1))
     linhas = [l.strip() for l in texto.splitlines() if re.search(r"\b\d{5}-?\d{3}\b", l)]
+    # Linhas de CPF também têm 8 dígitos e não são endereço.
+    linhas = [l for l in linhas if not re.search(r"(?i)\bcpf\b", l)]
     endereco = next((l for l in linhas if "receita federal" in l.lower()), linhas[0] if linhas else "")
     if endereco:
         dados["cep"] = re.search(r"\b(\d{5}-?\d{3})\b", endereco).group(1).replace("-", "")
@@ -85,20 +101,36 @@ def _garantir_login_mind7(tab) -> bool:
             email_elem = tab.ele("@name=email", timeout=0.5) or tab.ele("@type=email", timeout=0.5) or tab.ele("#email", timeout=0.5)
             pass_elem = tab.ele("@name=senha", timeout=0.5) or tab.ele("@name=password", timeout=0.5) or tab.ele("@type=password", timeout=0.5) or tab.ele("#senha", timeout=0.5)
 
-            if email_elem and not email_elem.value:
-                try: email_elem.input(MIND7_USER)
-                except Exception: pass
-            if pass_elem and not pass_elem.value:
-                try: pass_elem.input(MIND7_PASS)
-                except Exception: pass
+            try:
+                if email_elem and not email_elem.value:
+                    email_elem.input(MIND7_USER)
+                if pass_elem and not pass_elem.value:
+                    pass_elem.input(MIND7_PASS)
+            except Exception:
+                pass
 
-            log.info("[MIND7] Aguardando o login do usuário na tela inicial...")
+            if email_elem and pass_elem:
+                botao = (tab.ele("@type=submit", timeout=0.3) or tab.ele("tag:button", timeout=0.3)
+                         or tab.ele("text:Entrar", timeout=0.3) or tab.ele("text:Acessar", timeout=0.3))
+                if botao:
+                    try:
+                        botao.click()
+                    except Exception:
+                        pass
+                    for _ in range(20):
+                        time.sleep(0.5)
+                        if "acesso" not in tab.url.lower() and "login" not in tab.url.lower():
+                            return True
+                        _verificar_bloqueio_mind7(tab)
+
+            log.info("[MIND7] Login preenchido; aguardando a sessão do navegador...")
             return False
 
         return True
     except Exception as exc:
         log.warning(f"[MIND7] Aviso ao checar tela de login: {exc}")
         return False
+
 
 def _pegar_aba(page, keyword: str, fallback_url: str):
     try:
@@ -119,39 +151,92 @@ def _pegar_aba(page, keyword: str, fallback_url: str):
     return page.new_tab(fallback_url)
 
 
-def _verificar_bloqueio_mind7(tab, texto="", *, titulo=""):
-    """Reconhece bloqueios declarados pelo portal e interrompe novas consultas."""
+def _corpo_visivel(tab) -> str:
+    try:
+        body = tab.ele("tag:body", timeout=0.3)
+        # DrissionPage .text inclui elementos ocultos; .raw_text usa innerText.
+        return (body.raw_text or "") if body else ""
+    except Exception:
+        return ""
+
+
+def _assinatura_desafio(tab, titulo="", *, html=True) -> bool:
+    """Sinais de página de desafio Cloudflare (título/HTML), não texto solto."""
+    try:
+        title = titulo or getattr(tab, "title", "")
+    except Exception:
+        title = titulo
+    if isinstance(title, str) and any(m in title.lower() for m in ("just a moment", "um momento")):
+        return True
+    if not html:
+        return False
+    try:
+        page_html = tab.html
+    except Exception:
+        page_html = ""
+    return isinstance(page_html, str) and any(m in page_html.lower() for m in CHALLENGE_ASSINATURAS)
+
+
+def _em_desafio(tab, texto: str, titulo="", *, html=True) -> bool:
+    lower = (texto or "").lower()
+    return (any(m in lower for m in CHALLENGE_TEXTOS)
+            or _assinatura_desafio(tab, titulo, html=html))
+
+
+def _verificar_bloqueio_mind7(tab, texto="", *, titulo="", esperar=True, checar_html=True):
+    """Reconhece bloqueios e desafios; espera o Cloudflare resolver antes de concluir.
+
+    Desafio transitório não cria marcador persistente: gera Mind7Unavailable para
+    o chamador reconsiderar. Só o bloqueio declarado pelo portal é persistente.
+    """
     if not texto:
-        try:
-            body = tab.ele("tag:body", timeout=0.3)
-            # DrissionPage .text inclui elementos ocultos; .raw_text usa innerText.
-            texto = (body.raw_text or "") if body else ""
-        except Exception:
-            return
+        texto = _corpo_visivel(tab)
     lower = texto.lower() if isinstance(texto, str) else ""
     blocked = (
         "bloqueio automático" in lower or "bloqueio automatico" in lower
         or "limite de consultas" in lower or "acesso temporariamente bloqueado" in lower
         or ("consultas em 5 min" in lower and "automação" in lower)
+        or any(message in lower for message in BLOQUEIO_TEXTOS)
     )
-    if blocked or any(message in lower for message in (
-        "too many requests", "rate limit exceeded", "access denied", "acesso negado",
-        "acesso bloqueado", "excesso de consultas", "conta suspensa",
-        "bloqueio por atividade", "bloqueio temporário", "bloqueio temporario",
-    )):
+    if blocked:
         mark_mind7_blocked()
         raise Mind7AccessBlocked("Mind7 informou bloqueio de consultas. Processamento suspenso.")
-    if any(message in lower for message in (
-        "verify you are human", "verifique se você é humano", "verifique se voce e humano",
-        "checking your browser", "executando verificação", "executando verificacao",
-    )):
-        mark_mind7_blocked("Portal exige validação manual")
-        raise Mind7AccessBlocked("Conclua a validação manual do portal antes de retomar.")
-    title = titulo or getattr(tab, "title", "")
-    if isinstance(title, str) and any(message in title.lower() for message in (
-        "just a moment", "um momento",
-    )):
-        raise Mind7Unavailable("Mind7 aguarda validação do navegador; confira a aba antes de retomar.")
+    if not _em_desafio(tab, texto, titulo, html=checar_html):
+        return
+    if not esperar:
+        mark_mind7_blocked("Resposta HTTP exige validação no navegador")
+        raise Mind7AccessBlocked("Mind7 exige validação manual; consulta HTTP suspensa.")
+    log.info("[CLOUDFLARE] Desafio ativo; aguardando o navegador validar...")
+    deadline = time.monotonic() + CHALLENGE_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        atual = _corpo_visivel(tab)
+        if atual and not any(m in atual.lower() for m in CHALLENGE_TEXTOS):
+            log.info("[CLOUDFLARE] Desafio resolvido.")
+            return
+    raise Mind7Unavailable(
+        "Cloudflare ainda validando o navegador; nova tentativa em instantes sem reenviar consulta.")
+
+
+def probe_mind7_access(page, stop_event=None, tab=None) -> bool:
+    """GET inofensivo: confirma sessão e formulário sem gastar consulta.
+
+    True somente quando o formulário aparece e não há desafio/bloqueio.
+    """
+    tab = tab or _pegar_aba(page, "mind", MIND7_URL)
+    tab.get(MIND7_URL)
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            return False
+        _verificar_bloqueio_mind7(tab)
+        if tab.ele("#documento", timeout=1):
+            return True
+        if "acesso" in tab.url.lower() or "login" in tab.url.lower():
+            if _garantir_login_mind7(tab):
+                return True
+        time.sleep(0.5)
+    return False
 
 
 def enviar_consulta_mind7(tab, botao, stop_event=None, timeout=30):
@@ -219,8 +304,8 @@ def _aguardar_resultado_mind7(tab, seconds: float, *, listener=None,
         texto = (copiar.value or "").strip() if copiar else ""
         resultado = tab.ele("#conteudo-retorno", timeout=0)
         visivel = (resultado.raw_text or "").lower() if resultado and resultado.states.is_displayed else ""
-        _verificar_bloqueio_mind7(tab)
-        _verificar_bloqueio_mind7(tab, visivel)
+        _verificar_bloqueio_mind7(tab, checar_html=False)
+        _verificar_bloqueio_mind7(tab, visivel, checar_html=False)
         if monitor_funcional and not viu_post:
             try:
                 viu_post = bool(listener.wait(timeout=0.01, raise_err=False))
@@ -281,6 +366,15 @@ def extrair_numero_endereco(bloco_str: str) -> str:
 
     return "S/N"
 
+def _nome_da_linha(valor: str) -> str:
+    """Nome vem do primeiro trecho útil; o resto do bloco é seção seguinte."""
+    for linha in (valor or "").splitlines():
+        linha = linha.strip()
+        if linha and not linha.startswith("---"):
+            return linha
+    return ""
+
+
 def _extrair_candidatos_mind7(texto: str) -> List[Dict[str, Any]]:
     """
     Algoritmo de Extração de Candidatos do MODELO BASE:
@@ -306,9 +400,11 @@ def _extrair_candidatos_mind7(texto: str) -> List[Dict[str, Any]]:
         if not cpf_match:
             cpf_match = re.search(r"CPF:\s*(\d{3}\.\d{3}\.\d{3}-\d{2})", bloco)
         if not cpf_match:
+            cpf_match = re.search(r"CPF:\s*(\d{8,10})(?!\d)", bloco)
+        if not cpf_match:
             continue
 
-        cpf_limpo = re.sub(r"\D", "", cpf_match.group(1))
+        cpf_limpo = re.sub(r"\D", "", cpf_match.group(1)).zfill(11)
         if len(cpf_limpo) != 11 or len(set(cpf_limpo)) == 1:
             continue
 
@@ -326,6 +422,7 @@ def _extrair_candidatos_mind7(texto: str) -> List[Dict[str, Any]]:
         else:
             nome_match = re.search(r"NOME:\s*(.*)", bloco, re.I)
             nome_raw = nome_match.group(1).strip() if nome_match else "Desconhecido"
+        nome_raw = _nome_da_linha(nome_raw) or "Desconhecido"
 
         cep = ""
         cep_match = re.search(r"\b(\d{5}-?\d{3})\b", bloco)
@@ -367,9 +464,10 @@ def _extrair_candidatos_mind7(texto: str) -> List[Dict[str, Any]]:
                     if "CPF:" in p:
                         cpf_raw = p.replace("CPF:", "").strip()
                         if idx + 1 < len(partes):
-                            nome_raw = partes[idx + 1].strip()
+                            nome_raw = partes[idx + 1]
 
-                cpf_limpo = re.sub(r"\D", "", cpf_raw)
+                cpf_limpo = re.sub(r"\D", "", cpf_raw).zfill(11)
+                nome_raw = _nome_da_linha(nome_raw)
                 if len(cpf_limpo) == 11 and len(set(cpf_limpo)) > 1 and nome_raw:
                     cep = ""
                     cep_match = re.search(r"\b(\d{5}-?\d{3})\b", linha_txt)

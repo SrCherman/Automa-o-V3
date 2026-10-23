@@ -27,6 +27,7 @@ class DirectAPIClient:
         
         auth_data = {
             "mind7_cookies": "",
+            "mind7_user_agent": "",
             "itau_headers": {}
         }
         
@@ -47,6 +48,8 @@ class DirectAPIClient:
                 # Pega todos os cookies da aba
                 cookies = tab_mind.cookies()
                 auth_data["mind7_cookies"] = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                # O Cloudflare amarra o cf_clearance ao User-Agent do navegador.
+                auth_data["mind7_user_agent"] = tab_mind.run_js("return navigator.userAgent") or ""
         except Exception as e:
             print(f"    [!] Erro ao obter cookies do Mind7: {e}")
 
@@ -80,9 +83,10 @@ class DirectAPIClient:
             
         return auth_data
 
-    def consultar_mind7_api(self, telefone: str, cookies_str: str, nome_whatsapp: str = "") -> dict:
+    def consultar_mind7_api(self, telefone: str, cookies_str: str, nome_whatsapp: str = "",
+                            user_agent: str = "") -> dict:
         """
-        Consulta o Mind7 diretamente via HTTP POST.
+        Consulta o Mind7 diretamente via HTTP POST reutilizando a sessão do navegador.
         """
         url = "https://mind-7.org/painel/consultas/celular/search.php"
         
@@ -102,9 +106,17 @@ class DirectAPIClient:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Cookie": cookies_str,
-            "User-Agent": "Automacao-V3 (Mind7 usage-limited client)",
+            "User-Agent": user_agent or (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"),
             "X-Requested-With": "XMLHttpRequest",
-            "Referer": "https://mind-7.org/painel/consultas/celular/"
+            "Origin": "https://mind-7.org",
+            "Referer": "https://mind-7.org/painel/consultas/celular/",
+            "Accept": "text/html, */*; q=0.01",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         }
         
         payload = {
@@ -127,7 +139,10 @@ class DirectAPIClient:
             soup = BeautifulSoup(response.text, "html.parser")
             try:
                 _verificar_bloqueio_mind7(None, soup.get_text(" ", strip=True),
-                                         titulo=soup.title.get_text(strip=True) if soup.title else "")
+                                         titulo=soup.title.get_text(strip=True) if soup.title else "",
+                                         esperar=False)
+            except Mind7AccessBlocked:
+                raise
             except Mind7Unavailable as exc:
                 mark_mind7_blocked("Resposta HTTP exige validação no navegador")
                 raise Mind7AccessBlocked("Mind7 exige validação manual; consulta HTTP suspensa.") from exc

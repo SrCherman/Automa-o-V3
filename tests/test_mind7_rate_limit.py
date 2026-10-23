@@ -31,22 +31,42 @@ def test_cycle_pauses_after_completion_without_fixed_maximum(tmp_path):
         )
     with sqlite3.connect(ledger) as db:
         timestamps = [r[0] for r in db.execute("SELECT sent_at FROM requests ORDER BY sent_at")]
-    assert timestamps[-1] == pytest.approx(1070.0)
+    gaps = [max(0.9, quota.PAUSE_CYCLE_SECONDS[i % 4] + quota.JITTER_SECONDS[i % 4])
+            for i in range(40)]
+    assert sends[0] == 1000
+    assert timestamps[-1] == pytest.approx(1000 + sum(gaps))
     assert len(timestamps) == 41
-    assert sends[:9] == [1000, 1001, 1003, 1004, 1007, 1008, 1010, 1011, 1014]
-    assert all(b - a >= quota.PAUSE_CYCLE_SECONDS[i % 4]
-               for i, (a, b) in enumerate(zip(sends, sends[1:])))
+    assert all(b - a >= gap - 1e-9 for (a, b), gap in zip(zip(sends, sends[1:]), gaps))
     assert sends[-1] - sends[0] < 300  # 41 envios simulados, sem teto fixo
     assert len(sleeps) > 0
 
 
+def test_jitter_varies_and_cooldown_extends_the_pause(tmp_path, monkeypatch):
+    monkeypatch.setattr(quota, "COOLDOWN_EVERY", 3)
+    now, sends = [1000.0], []
+    ledger, flag = tmp_path / "rate.sqlite", tmp_path / "blocked"
+    def wait(seconds):
+        now[0] += seconds
+    for _ in range(4):
+        quota.reserve_mind7_request(ledger_file=ledger, block_file=flag, clock=lambda: now[0],
+                                    sleep=wait, send=lambda: sends.append(now[0]))
+    gaps = [b - a for a, b in zip(sends, sends[1:])]
+    assert len(gaps) == 3
+    assert gaps[0] != gaps[2]  # ciclo com jitter, previsível mas não fixo
+    assert gaps[2] >= max(0.9, quota.PAUSE_CYCLE_SECONDS[2] + quota.JITTER_SECONDS[2]) \
+        + quota.COOLDOWN_SECONDS[0]
+
+
 def test_shared_quota_serializes_concurrent_submissions(tmp_path, monkeypatch):
+    import time
     monkeypatch.setattr(quota, "PAUSE_CYCLE_SECONDS", (0,))
+    monkeypatch.setattr(quota, "JITTER_SECONDS", (0,))
     ledger = tmp_path / "rate.sqlite"
     flag = tmp_path / "blocked"
     def reserve(_):
         quota.reserve_mind7_request(
-            ledger_file=ledger, block_file=flag, clock=lambda: 1000.0)
+            ledger_file=ledger, block_file=flag, clock=time.time)
+
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(reserve, range(8)))
     with sqlite3.connect(ledger) as db:
@@ -92,9 +112,9 @@ def test_failed_send_counts_and_delayed_send_keeps_spacing(tmp_path):
         quota.reserve_mind7_request(send=uncertain_send, **options)
     calls = []
     quota.reserve_mind7_request(send=lambda: calls.append(now[0]), **options)
-    assert calls == [1031.0]
+    assert calls == [pytest.approx(1032.2)]
     with sqlite3.connect(ledger) as db:
-        assert db.execute("SELECT sent_at FROM requests ORDER BY sent_at").fetchall() == [(1030.0,), (1031.0,)]
+        assert db.execute("SELECT sent_at FROM requests ORDER BY sent_at").fetchall() == [(1030.0,), (pytest.approx(1032.2),)]
 
 
 def test_restart_preserves_next_pause_and_cycle_position(tmp_path):
@@ -107,9 +127,9 @@ def test_restart_preserves_next_pause_and_cycle_position(tmp_path):
     for _ in range(2):
         quota.reserve_mind7_request(send=lambda: sends.append(now[0]), **options)
     with sqlite3.connect(ledger) as db:
-        assert db.execute("SELECT next_index, ready_at FROM cadence").fetchall() == [(2, 1003.0)]
+        assert db.execute("SELECT next_index, ready_at FROM cadence").fetchall() == [(2, pytest.approx(1005.55))]
     quota.reserve_mind7_request(send=lambda: sends.append(now[0]), **options)
-    assert sends == [1000.0, 1001.0, 1003.0]
+    assert sends == [1000.0, pytest.approx(1002.2), pytest.approx(1005.55)]
 
 
 def test_existing_ledger_preserves_cadence_during_migration(tmp_path):
@@ -124,7 +144,7 @@ def test_existing_ledger_preserves_cadence_during_migration(tmp_path):
     quota.reserve_mind7_request(
         ledger_file=ledger, block_file=flag, clock=lambda: now[0], sleep=wait,
         send=lambda: sends.append(now[0]))
-    assert sends == [1001.0]
+    assert sends == [pytest.approx(1002.2)]
 
 
 def test_loading_time_finishes_before_cooldown_starts(tmp_path):
@@ -139,7 +159,7 @@ def test_loading_time_finishes_before_cooldown_starts(tmp_path):
     assert quota.reserve_mind7_request(send=complete_response, **options) == "response"
     sends = []
     quota.reserve_mind7_request(send=lambda: sends.append(now[0]), **options)
-    assert sends == [1031.0]
+    assert sends == [pytest.approx(1032.2)]
 
 
 def test_block_or_cancel_while_waiting_prevents_send(tmp_path):
@@ -147,12 +167,15 @@ def test_block_or_cancel_while_waiting_prevents_send(tmp_path):
         ledger = tmp_path / f"quota-{cancel}.sqlite"
         flag = tmp_path / f"blocked-{cancel}"
         stop = threading.Event()
-        quota.reserve_mind7_request(ledger_file=ledger, block_file=flag, clock=lambda: 1000)
+        now = [1000.0]
+        quota.reserve_mind7_request(ledger_file=ledger, block_file=flag, clock=lambda: now[0])
         def wait(seconds):
+            now[0] += seconds
             if cancel:
                 stop.set()
             else:
                 flag.write_text("Bloqueado", encoding="utf-8")
+
         send = Mock()
         # No stop_event here so the deterministic sleep hook can trigger the flag.
         if cancel:
@@ -162,7 +185,8 @@ def test_block_or_cancel_while_waiting_prevents_send(tmp_path):
             stop.wait = cancelled_wait
         with pytest.raises(quota.Mind7QueryCancelled if cancel else quota.Mind7AccessBlocked):
             quota.reserve_mind7_request(stop if cancel else None, ledger_file=ledger,
-                                        block_file=flag, clock=lambda: 1000, sleep=wait, send=send)
+                                        block_file=flag, clock=lambda: now[0], sleep=wait, send=send)
+
         send.assert_not_called()
 
 
@@ -219,7 +243,7 @@ def test_mark_blocked_never_overwrites_original(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("message", ["Bloqueio automático", "Limite de consultas",
-                                     "Too many requests", "Access denied", "Verify you are human"])
+                                     "Too many requests", "Access denied"])
 def test_block_and_challenge_stop_before_navigation(message):
     tab = Mock(url="https://mind-7.org/painel/")
     tab.ele.return_value = SimpleNamespace(raw_text=message)
@@ -227,6 +251,15 @@ def test_block_and_challenge_stop_before_navigation(message):
         scraper.consultar_mind7_cpf(Mock(), "12345678901", tab=tab)
     tab.get.assert_not_called()
     assert quota.BLOCK_FILE.exists()
+
+
+def test_challenge_text_without_page_signals_pauses_without_marker():
+    tab = Mock(url="https://mind-7.org/painel/")
+    tab.ele.return_value = SimpleNamespace(raw_text="Verify you are human")
+    with pytest.raises(scraper.Mind7Unavailable):
+        scraper.consultar_mind7_cpf(Mock(), "12345678901", tab=tab)
+    assert not quota.BLOCK_FILE.exists()
+
 
 
 def test_hidden_loader_does_not_create_a_persistent_block():
@@ -252,3 +285,45 @@ def test_active_challenge_title_pauses_without_declaring_provider_block(title):
     with pytest.raises(scraper.Mind7Unavailable):
         scraper._verificar_bloqueio_mind7(tab)
     assert not quota.BLOCK_FILE.exists()
+
+def test_challenge_resolves_without_persistent_block(monkeypatch):
+    monkeypatch.setattr(scraper, "CHALLENGE_WAIT_SECONDS", 5)
+    textos = iter(["executando verificação", "", "MIND7 Consultas"])
+    tab = SimpleNamespace(title="Um momento...", html="<div id='challenge-stage'></div>",
+                          ele=lambda *a, **kw: SimpleNamespace(raw_text=next(textos, "")))
+    scraper._verificar_bloqueio_mind7(tab)
+    assert not quota.BLOCK_FILE.exists()
+
+
+def test_probe_requires_form_and_clears_stale_inflight(tmp_path):
+    tab = SimpleNamespace(url="https://mind-7.org/painel/consultas/celular/", title="MIND7",
+                          html="", get=lambda url: None,
+                          ele=lambda sel, **kw: object() if sel == "#documento" else SimpleNamespace(raw_text=""))
+    assert scraper.probe_mind7_access(None, tab=tab)
+    assert not quota.BLOCK_FILE.exists()
+
+
+def test_clear_block_removes_marker_and_abandoned_inflight(tmp_path):
+    flag, ledger = tmp_path / "blocked", tmp_path / "quota.sqlite"
+    flag.write_text("bloqueio", encoding="utf-8")
+    ledger.with_suffix(".inflight").write_text("x", encoding="utf-8")
+    quota.clear_mind7_block(block_file=flag, ledger_file=ledger)
+    assert not flag.exists() and not ledger.with_suffix(".inflight").exists()
+
+def test_cpf_without_leading_zeros_is_confirmed_and_cpf_is_not_cep():
+    texto = ("🆔 CPF: 18248055\nCPF: 18248055\nData de Nascimento: 10/03/1978\n"
+             "R JAGUARI, Nº 28, VILA COLATO, HORIZONTINA/RS, 98920-000")
+    dados = scraper.extrair_dados_cpf(texto, "00018248055")
+    assert dados["cpf"] == "00018248055"
+    assert dados["birth_date"] == "1978-03-10"
+    assert (dados["cep"], dados["house_number"]) == ("98920000", "28")
+    with pytest.raises(ValueError):
+        scraper.extrair_dados_cpf(texto, "11111111111")
+
+
+def test_phone_candidate_name_stops_at_next_section():
+    texto = ("CPF: 18248055 | MARCIA ADRIANE DOS SANTOS\n\n\n--- TELEFONES ---\n"
+             "(55) 99999-0000\nR JAGUARI, 28, 98920-000")
+    candidatos = scraper._extrair_candidatos_mind7(texto)
+    assert candidatos[0]["cpf"] == "00018248055"
+    assert candidatos[0]["nome"] == "MARCIA ADRIANE DOS SANTOS"
