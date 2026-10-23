@@ -63,6 +63,12 @@ def extrair_resultado_c6(text):
         return {"status": "DADOS INVALIDOS", "financed_value": None, "observation": "C6: confira o CPF informado"}
     if re.search(r"\berro\b", plain):
         return None
+    # Aprovação que avança direto para a etapa 2/3 (financiamento).
+    if "forma de pagamento" in plain or "data de vencimento" in plain:
+        match = re.search(r"financiamento\s*R\$\s*([\d.]+,\d{2})", text, re.I)
+        if match and valor_monetario(match.group(1)) > 0:
+            return {"status": "APROVADO", "financed_value": f"R$ {match.group(1)}",
+                    "observation": "C6 avançou para a etapa de financiamento (aprovado)"}
     if "valor sugerido" in plain:
         match = re.search(r"\bvalor\s+sugerido\b[\s\S]*?\bfinanciamento\s*R\$\s*([\d.]+,\d{2})", text, re.I)
         if match and valor_monetario(match.group(1)) > 0:
@@ -137,7 +143,7 @@ def iniciar_nova_consulta(tab):
                  C6_FORM_TIMEOUT, "painel C6"):
         raise C6Unavailable("Painel C6 indisponível")
     time.sleep(0.4)  # deixa o router do painel terminar antes de clicar
-    if "/shopkeeper-panel" not in tab.url:
+    if "/shopkeeper-panel" not in tab.url and "pre-analysis" not in tab.url:
         _login(tab)
     if urlparse(tab.url).hostname != "c6auto.com.br":
         raise C6Unavailable("C6 redirecionou para um domínio não reconhecido")
@@ -147,8 +153,9 @@ def iniciar_nova_consulta(tab):
         if not create:
             break
         _click_text(tab, "CRIAR UMA NOVA PROPOSTA")
-        time.sleep(0.6)  # Angular liga o handler do router depois de pintar o botão
-        # O CPF aparece antes de o C6 terminar de carregar produto, UF e placa.
+        # Clique engolido não muda a rota: repete rápido em vez de esperar 8 s.
+        if not _wait(lambda: "pre-analysis" in tab.url, 3):
+            continue
         field = _wait(lambda: tab.ele('css:input[formcontrolname="numeroDocumento"]', timeout=0),
                       8, "formulario da proposta")
         if field:

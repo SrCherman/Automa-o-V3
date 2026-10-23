@@ -89,11 +89,14 @@ def test_return_to_panel_checks_that_next_form_is_empty(monkeypatch):
     button = Mock()
     field = Mock(value="")
     monkeypatch.setattr(c6, "_button", lambda *a: button)
-    monkeypatch.setattr(c6, "_click_text", lambda *a: button.click())
+    def clicar(*a):
+        button.click()
+        tab.url = "https://c6auto.com.br/originacaolojista/pre-analysis"
+    monkeypatch.setattr(c6, "_click_text", clicar)
     tab.ele.return_value = field
     c6.iniciar_nova_consulta(tab)
     c6.iniciar_nova_consulta(tab)
-    assert button.click.call_count == 2 and tab.get.call_count == 0
+    assert button.click.call_count == 2 and tab.get.call_count == 1
     field.value = "12345678901"
     with pytest.raises(c6.C6Unavailable, match="vazio"):
         c6.iniciar_nova_consulta(tab)
@@ -110,7 +113,10 @@ def test_new_proposal_retries_click_if_panel_does_not_navigate(monkeypatch):
     tab = Mock(url=c6.C6_URL)
     clicks = []
     create = Mock()
-    create.click.side_effect = lambda: clicks.append(1)
+    def clicar():
+        clicks.append(1)
+        tab.url = "https://c6auto.com.br/originacaolojista/pre-analysis"
+    create.click.side_effect = clicar
     field = Mock(value="")
     monkeypatch.setattr(c6, "_button", lambda *args: create)
     monkeypatch.setattr(c6, "_click_text", lambda *a: create.click())
@@ -255,6 +261,14 @@ def test_c6_waits_longer_than_old_limit_and_logs_the_delay(monkeypatch, caplog):
     assert now[0] >= 60
     assert result["financed_value"] == "R$ 117.000,00"
     assert "resultado da simulacao concluido_em=60.0s" in caplog.text
+
+def test_approved_proposal_that_advances_to_financing_step_is_read():
+    texto = ("Simulação e Proposta\n2 de 3\nSIMULAÇÃO DE FINANCIAMENTO\n"
+             "Entrada\nFinanciamento\nR$ 117.000,00\nData de vencimento\n"
+             "Forma de pagamento\nBOLETO")
+    assert c6.extrair_resultado_c6(texto)["status"] == "APROVADO"
+    assert c6.extrair_resultado_c6(texto)["financed_value"] == "R$ 117.000,00"
+
 
 def test_above_75_is_out_of_policy_without_opening_the_portal():
     page = Mock()
